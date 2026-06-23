@@ -1,0 +1,458 @@
+package tui
+
+import (
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/malisev/midnight-director/internal/ai"
+	"github.com/malisev/midnight-director/internal/session"
+	"github.com/malisev/midnight-director/internal/tmux"
+)
+
+type sessionsDiscoveredMsg []*session.Session
+type sessionCreatedMsg *session.Session
+type liveScreenMsg string
+type summaryResultMsg struct {
+	idx  int
+	text string
+}
+type errMsg error
+
+func discoverSessions() tea.Cmd {
+	return func() tea.Msg {
+		names, err := tmux.ListSessions()
+		if err != nil {
+			return errMsg(err)
+		}
+		var sessions []*session.Session
+		for _, n := range names {
+			s := &session.Session{Name: n}
+			_ = session.Refresh(s)
+			sessions = append(sessions, s)
+		}
+		return sessionsDiscoveredMsg(sessions)
+	}
+}
+
+func tickEvery(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
+func pollSession(idx int, s *session.Session) tea.Cmd {
+	return func() tea.Msg {
+		_ = session.Refresh(s)
+		return pollMsg{idx: idx}
+	}
+}
+
+func captureScreen(idx int, name string) tea.Cmd {
+	return func() tea.Msg {
+		content, err := tmux.CapturePanePlain(name)
+		if err != nil {
+			content = "(error capturing screen)"
+		}
+		return screenCaptureMsg{idx: idx, content: content}
+	}
+}
+
+func summarizeSession(idx int, paneText, aiCmd string) tea.Cmd {
+	return func() tea.Msg {
+		text, err := ai.Summarize(aiCmd, paneText)
+		if err != nil {
+			return summaryResultMsg{idx: idx, text: ""}
+		}
+		return summaryResultMsg{idx: idx, text: text}
+	}
+}
+
+func refreshScreen(name string) tea.Cmd {
+	return func() tea.Msg {
+		content, err := tmux.CapturePanePlain(name)
+		if err != nil {
+			return nil
+		}
+		return liveScreenMsg(content)
+	}
+}
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
+	case sessionsDiscoveredMsg:
+		m.sessions = msg
+		return m, nil
+
+	case sessionCreatedMsg:
+		m.sessions = append(m.sessions, msg)
+		m.focused = len(m.sessions) - 1
+		return m, nil
+
+	case pollMsg:
+		if msg.idx < len(m.sessions) {
+			s := m.sessions[msg.idx]
+			if m.autoSummarize && m.aiCmd != "" &&
+				(s.State == session.StateDone || s.State == session.StateWaiting) &&
+				!s.StableStateSince.IsZero() &&
+				time.Since(s.StableStateSince) >= session.SummaryDebounce &&
+				!s.IsSummarizing && s.Summary == "" {
+				s.IsSummarizing = true
+				return m, summarizeSession(msg.idx, s.LastOutput, m.aiCmd)
+			}
+		}
+		return m, nil
+
+	case summaryResultMsg:
+		if msg.idx < len(m.sessions) {
+			s := m.sessions[msg.idx]
+			s.IsSummarizing = false
+			s.Summary = msg.text
+		}
+		return m, nil
+
+	case screenCaptureMsg:
+		m.screenText = msg.content
+		m.mode = modeScreenView
+		return m, nil
+
+	case liveScreenMsg:
+		m.screenText = string(msg)
+		return m, nil
+
+	case tickMsg:
+		var cmds []tea.Cmd
+		m.spinnerTick++
+		for i, s := range m.sessions {
+			cmds = append(cmds, pollSession(i, s))
+		}
+		if (m.mode == modeScreenView || m.mode == modeScreenInput) && len(m.sessions) > 0 {
+			cmds = append(cmds, refreshScreen(m.sessions[m.focused].Name))
+		}
+		cmds = append(cmds, tickEvery(200*time.Millisecond))
+		return m, tea.Batch(cmds...)
+
+	case errMsg:
+		m.err = msg
+		return m, nil
+
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeList:
+		return m.handleListKey(msg)
+	case modeMenu:
+		return m.handleMenuKey(msg)
+	case modeNewSession:
+		return m.handleNewSessionKey(msg)
+	case modeCommandInput, modeQuickInput, modeScreenInput:
+		return m.handleInputKey(msg)
+	case modeScreenView:
+		return m.handleScreenKey(msg)
+	case modeKillConfirm:
+		return m.handleKillKey(msg)
+	case modeRenameInput:
+		return m.handleRenameKey(msg)
+	case modeAnnotateInput:
+		return m.handleAnnotateKey(msg)
+	}
+	return m, nil
+}
+
+func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "up", "k":
+		if m.focused > 0 {
+			m.focused--
+		}
+
+	case "down", "j":
+		if m.focused < len(m.sessions)-1 {
+			m.focused++
+		}
+
+	case "right", "l":
+		if len(m.sessions) > 0 {
+			m.mode = modeMenu
+			m.menuCursor = 0
+		}
+
+	case "i", "enter":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			if s.State == session.StateWaiting {
+				m.mode = modeQuickInput
+				m.input.SetValue("")
+				m.input.Placeholder = "send to " + s.Name + "…"
+				m.input.Focus()
+				return m, textinput.Blink
+			}
+		}
+
+	case "e":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			m.mode = modeRenameInput
+			m.input.SetValue(s.Name)
+			m.input.Placeholder = "new name"
+			m.input.Focus()
+			return m, textinput.Blink
+		}
+
+	case "a":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			m.mode = modeAnnotateInput
+			m.input.SetValue(s.Note)
+			m.input.Placeholder = "note…"
+			m.input.Focus()
+			return m, textinput.Blink
+		}
+
+	case "n":
+		m.mode = modeNewSession
+		m.input.SetValue("")
+		m.input.Placeholder = "session name…"
+		m.input.Focus()
+		return m, textinput.Blink
+
+	case "t":
+		m.darkMode = !m.darkMode
+		if m.darkMode {
+			m.theme = darkTheme()
+		} else {
+			m.theme = lightTheme()
+		}
+
+	case "s":
+		if m.aiCmd != "" {
+			m.autoSummarize = !m.autoSummarize
+		}
+	}
+
+	return m, nil
+}
+
+func (m Model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.menuCursor > 0 {
+			m.menuCursor--
+		}
+	case "down", "j":
+		if m.menuCursor < len(menuItems)-1 {
+			m.menuCursor++
+		}
+	case "left", "esc":
+		m.mode = modeList
+	case "enter":
+		return m.executeMenuItem()
+	}
+	return m, nil
+}
+
+func (m Model) executeMenuItem() (tea.Model, tea.Cmd) {
+	if len(m.sessions) == 0 {
+		m.mode = modeList
+		return m, nil
+	}
+	s := m.sessions[m.focused]
+
+	switch menuItems[m.menuCursor].item {
+	case menuCommand:
+		m.mode = modeCommandInput
+		m.input.SetValue("")
+		m.input.Placeholder = "command to run in " + s.Name
+		m.input.Focus()
+		return m, textinput.Blink
+
+	case menuGetScreen:
+		m.mode = modeList // will switch to modeScreenView after capture
+		return m, captureScreen(m.focused, s.Name)
+
+	case menuConnect:
+		m.mode = modeList
+		return m, connectToSession(s.Name)
+
+	case menuKill:
+		m.mode = modeKillConfirm
+	}
+	return m, nil
+}
+
+func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter", "ctrl+j":
+		name := strings.TrimSpace(m.input.Value())
+		m.input.Blur()
+		m.mode = modeList
+		if name != "" {
+			return m, createSession(name)
+		}
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+
+	case "enter", "ctrl+j":
+		val := strings.TrimSpace(m.input.Value())
+		m.input.Blur()
+
+		switch m.mode {
+		case modeCommandInput:
+			if len(m.sessions) > 0 {
+				s := m.sessions[m.focused]
+				_ = tmux.SendKeys(s.Name, val)
+			}
+			m.mode = modeList
+
+		case modeQuickInput:
+			if len(m.sessions) > 0 {
+				s := m.sessions[m.focused]
+				_ = tmux.SendKeys(s.Name, val)
+			}
+			m.mode = modeList
+
+		case modeScreenInput:
+			if len(m.sessions) > 0 {
+				s := m.sessions[m.focused]
+				_ = tmux.SendKeys(s.Name, val)
+			}
+			m.mode = modeList
+		}
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handleScreenKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.mode = modeList
+	case "i", "enter":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			m.mode = modeScreenInput
+			m.input.SetValue("")
+			m.input.Placeholder = "send to " + s.Name + "…"
+			m.input.Focus()
+			return m, textinput.Blink
+		}
+	}
+	return m, nil
+}
+
+func (m Model) handleKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			_ = tmux.KillSession(s.Name)
+			m.sessions = append(m.sessions[:m.focused], m.sessions[m.focused+1:]...)
+			if m.focused >= len(m.sessions) && m.focused > 0 {
+				m.focused--
+			}
+		}
+		m.mode = modeList
+	default:
+		m.mode = modeList
+	}
+	return m, nil
+}
+
+func (m Model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.input.Value())
+		m.input.Blur()
+		if val != "" && len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			if err := tmux.RenameSession(s.Name, val); err == nil {
+				s.Name = val
+			}
+		}
+		m.mode = modeList
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m Model) handleAnnotateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeList
+		m.input.Blur()
+		return m, nil
+	case "enter":
+		val := m.input.Value()
+		m.input.Blur()
+		if len(m.sessions) > 0 {
+			m.sessions[m.focused].Note = val
+		}
+		m.mode = modeList
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func createSession(name string) tea.Cmd {
+	return func() tea.Msg {
+		if err := tmux.NewSession(name); err != nil {
+			return errMsg(err)
+		}
+		s := &session.Session{Name: name}
+		_ = session.Refresh(s)
+		return sessionCreatedMsg(s)
+	}
+}
+
+func connectToSession(name string) tea.Cmd {
+	return tea.ExecProcess(
+		exec.Command("tmux", "attach-session", "-t", name),
+		func(err error) tea.Msg { return nil },
+	)
+}
+
