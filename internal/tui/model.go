@@ -31,6 +31,7 @@ const (
 	menuGetScreen
 	menuConnect
 	menuKill
+	menuSummarize
 )
 
 var menuItems = []struct {
@@ -40,6 +41,7 @@ var menuItems = []struct {
 	{menuConnect, "connect"},
 	{menuCommand, "command"},
 	{menuGetScreen, "get screen"},
+	{menuSummarize, "summarize"},
 	{menuKill, "kill"},
 }
 
@@ -83,6 +85,6 @@ func New() Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		discoverSessions(),
-		tickEvery(200*time.Millisecond),
+		tickEvery(5*time.Second),
 	)
 }

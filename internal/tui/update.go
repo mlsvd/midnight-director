@@ -2,6 +2,7 @@ package tui
 
 import (
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,6 +81,21 @@ func refreshScreen(name string) tea.Cmd {
 	}
 }
 
+func sortSessions(sessions []*session.Session) {
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].Name < sessions[j].Name
+	})
+}
+
+func indexByName(sessions []*session.Session, name string) int {
+	for i, s := range sessions {
+		if s.Name == name {
+			return i
+		}
+	}
+	return len(sessions) - 1
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
@@ -90,18 +106,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionsDiscoveredMsg:
 		m.sessions = msg
+		sortSessions(m.sessions)
 		return m, nil
 
 	case sessionCreatedMsg:
 		m.sessions = append(m.sessions, msg)
-		m.focused = len(m.sessions) - 1
+		sortSessions(m.sessions)
+		m.focused = indexByName(m.sessions, msg.Name)
 		return m, nil
 
 	case pollMsg:
 		if msg.idx < len(m.sessions) {
 			s := m.sessions[msg.idx]
 			if m.autoSummarize && m.aiCmd != "" &&
-				(s.State == session.StateDone || s.State == session.StateWaiting) &&
+				(s.State == session.StateDone || s.State == session.StateWaiting || s.State == session.StateIdle) &&
 				!s.StableStateSince.IsZero() &&
 				time.Since(s.StableStateSince) >= session.SummaryDebounce &&
 				!s.IsSummarizing && s.Summary == "" {
@@ -137,7 +155,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if (m.mode == modeScreenView || m.mode == modeScreenInput) && len(m.sessions) > 0 {
 			cmds = append(cmds, refreshScreen(m.sessions[m.focused].Name))
 		}
-		cmds = append(cmds, tickEvery(200*time.Millisecond))
+		cmds = append(cmds, tickEvery(5*time.Second))
 		return m, tea.Batch(cmds...)
 
 	case errMsg:
@@ -292,6 +310,14 @@ func (m Model) executeMenuItem() (tea.Model, tea.Cmd) {
 	case menuConnect:
 		m.mode = modeList
 		return m, connectToSession(s.Name)
+
+	case menuSummarize:
+		m.mode = modeList
+		if m.aiCmd != "" && !s.IsSummarizing {
+			s.IsSummarizing = true
+			s.Summary = ""
+			return m, summarizeSession(m.focused, s.LastOutput, m.aiCmd)
+		}
 
 	case menuKill:
 		m.mode = modeKillConfirm

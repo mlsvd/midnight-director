@@ -75,6 +75,9 @@ func Refresh(s *Session) error {
 	}
 
 	if isShell(cmd) {
+		if s.PrevState != StateIdle {
+			s.StableStateSince = time.Now()
+		}
 		s.State = StateIdle
 		s.Hint = ""
 		s.StreamChunk = ""
