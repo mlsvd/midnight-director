@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/malisev/midnight-director/internal/ai"
 	"github.com/malisev/midnight-director/internal/session"
@@ -58,6 +59,7 @@ type Model struct {
 	mode          viewMode
 	menuCursor    int
 	input         textinput.Model
+	viewport      viewport.Model
 	screenText    string
 	spinnerTick   int
 	width         int

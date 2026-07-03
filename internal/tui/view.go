@@ -33,49 +33,92 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func (m Model) viewSessionList() string {
+func (m Model) buildListContent() string {
 	var b strings.Builder
 
 	if len(m.sessions) == 0 {
-		padding := (m.height - 4) / 2
-		for i := 0; i < padding; i++ {
-			b.WriteString("\n")
-		}
+		b.WriteString("\n")
 		b.WriteString(m.theme.Empty.Render("  No sessions. Press  n  to create one."))
 		b.WriteString("\n")
 	} else {
 		for i, s := range m.sessions {
 			b.WriteString(m.renderSessionCard(i, s))
 			b.WriteString("\n")
-			if i == m.focused && m.mode == modeQuickInput {
-				b.WriteString(m.renderInlineInput("  "))
-				b.WriteString("\n")
-			}
-			if i == m.focused && m.mode == modeKillConfirm {
-				b.WriteString(m.theme.Confirm.Render(fmt.Sprintf(`  Kill "%s"? [y/N]`, s.Name)))
-				b.WriteString("\n")
-			}
-			if i == m.focused && (m.mode == modeAnnotateInput || m.mode == modeRenameInput) {
-				b.WriteString(m.renderInlineInput("  "))
-				b.WriteString("\n")
+			if i == m.focused {
+				switch m.mode {
+				case modeMenu:
+					b.WriteString(m.viewMenu())
+					b.WriteString("\n")
+				case modeQuickInput:
+					b.WriteString(m.renderInlineInput("  "))
+					b.WriteString("\n")
+				case modeKillConfirm:
+					b.WriteString(m.theme.Confirm.Render(fmt.Sprintf(`  Kill "%s"? [y/N]`, s.Name)))
+					b.WriteString("\n")
+				case modeAnnotateInput, modeRenameInput:
+					b.WriteString(m.renderInlineInput("  "))
+					b.WriteString("\n")
+				}
 			}
 		}
 	}
 
-	if m.mode == modeMenu && len(m.sessions) > 0 {
-		b.WriteString(m.viewMenu())
-		b.WriteString("\n")
-	}
-	if m.mode == modeNewSession {
+	switch m.mode {
+	case modeNewSession:
 		b.WriteString(m.renderInlineInput("  new session: "))
 		b.WriteString("\n")
-	}
-	if m.mode == modeCommandInput {
+	case modeCommandInput:
 		b.WriteString(m.renderInlineInput("  command: "))
 		b.WriteString("\n")
 	}
 
+	return b.String()
+}
+
+func (m Model) viewSessionList() string {
+	var b strings.Builder
+	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, m.viewport.View(), m.renderScrollbar()))
+	b.WriteString("\n")
 	b.WriteString(m.viewCommandBar())
+	return b.String()
+}
+
+func (m Model) renderScrollbar() string {
+	total := m.viewport.TotalLineCount()
+	h := m.viewport.Height
+	if h <= 0 {
+		return ""
+	}
+
+	trackStyle := lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	thumbStyle := lipgloss.NewStyle().Background(lipgloss.Color("243"))
+
+	track := trackStyle.Render(" ") + " "
+	thumb := thumbStyle.Render(" ") + " "
+
+	// no scrollbar needed when all content fits
+	if total <= h {
+		return strings.Repeat(track+"\n", h-1) + track
+	}
+
+	thumbH := h * h / total
+	if thumbH < 1 {
+		thumbH = 1
+	}
+	maxTop := h - thumbH
+	thumbTop := int(m.viewport.ScrollPercent() * float64(maxTop))
+
+	var b strings.Builder
+	for i := 0; i < h; i++ {
+		if i >= thumbTop && i < thumbTop+thumbH {
+			b.WriteString(thumb)
+		} else {
+			b.WriteString(track)
+		}
+		if i < h-1 {
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/malisev/midnight-director/internal/ai"
 	"github.com/malisev/midnight-director/internal/session"
@@ -97,11 +98,34 @@ func indexByName(sessions []*session.Session, name string) int {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m, cmd := m.innerUpdate(msg)
+
+	if m.width > 0 {
+		m.viewport.SetContent(m.buildListContent())
+		m.ensureFocusedVisible()
+
+		// forward non-key messages (mouse wheel, resize, etc.) to viewport
+		if _, isKey := msg.(tea.KeyMsg); !isKey {
+			var vpCmd tea.Cmd
+			m.viewport, vpCmd = m.viewport.Update(msg)
+			cmd = tea.Batch(cmd, vpCmd)
+		}
+	}
+
+	return m, cmd
+}
+
+func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		vpHeight := m.height - 3 // title (1) + command bar (2)
+		if vpHeight < 1 {
+			vpHeight = 1
+		}
+		m.viewport = viewport.New(m.width-2, vpHeight)
 		return m, nil
 
 	case sessionsDiscoveredMsg:
@@ -171,7 +195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch m.mode {
 	case modeList:
 		return m.handleListKey(msg)
@@ -193,7 +217,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -270,7 +294,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleMenuKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
 		if m.menuCursor > 0 {
@@ -288,7 +312,7 @@ func (m Model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) executeMenuItem() (tea.Model, tea.Cmd) {
+func (m Model) executeMenuItem() (Model, tea.Cmd) {
 	if len(m.sessions) == 0 {
 		m.mode = modeList
 		return m, nil
@@ -325,7 +349,7 @@ func (m Model) executeMenuItem() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleNewSessionKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeList
@@ -345,7 +369,7 @@ func (m Model) handleNewSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeList
@@ -386,7 +410,7 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleScreenKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.mode = modeList
@@ -403,7 +427,7 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKillKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		if len(m.sessions) > 0 {
@@ -421,7 +445,7 @@ func (m Model) handleKillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleRenameKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeList
@@ -444,7 +468,7 @@ func (m Model) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleAnnotateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleAnnotateKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeList
@@ -472,6 +496,17 @@ func createSession(name string) tea.Cmd {
 		s := &session.Session{Name: name}
 		_ = session.Refresh(s)
 		return sessionCreatedMsg(s)
+	}
+}
+
+func (m *Model) ensureFocusedVisible() {
+	const cardHeight = 4 // top border + 2 content lines + bottom border
+	top := m.focused * cardHeight
+	bottom := top + cardHeight - 1
+	if top < m.viewport.YOffset {
+		m.viewport.SetYOffset(top)
+	} else if bottom >= m.viewport.YOffset+m.viewport.Height {
+		m.viewport.SetYOffset(bottom - m.viewport.Height + 1)
 	}
 }
 
