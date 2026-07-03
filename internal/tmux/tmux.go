@@ -91,3 +91,14 @@ func AttachSession(session string) error {
 func AttachArgs(session string) []string {
 	return []string{"tmux", "attach-session", "-t", session}
 }
+
+// RegisterPickerBinding installs a global tmux key binding (M-p) that opens
+// the prompt picker popup targeting whichever session is currently active.
+func RegisterPickerBinding(execPath string) error {
+	// Single-quote execPath so spaces in the path don't break shell parsing.
+	// #{session_name} is expanded by tmux at keypress time before shell sees it.
+	cmd := fmt.Sprintf("'%s' --picker #{session_name}", execPath)
+	return exec.Command("tmux", "bind-key", "-n", "M-r",
+		"display-popup", "-E", "-w", "80%", "-h", "80%", cmd,
+	).Run()
+}

@@ -44,9 +44,8 @@ func (m Model) viewSessionList() string {
 		b.WriteString(m.theme.Empty.Render("  No sessions. Press  n  to create one."))
 		b.WriteString("\n")
 	} else {
-		b.WriteString("\n")
 		for i, s := range m.sessions {
-			b.WriteString(m.renderSessionRow(i, s))
+			b.WriteString(m.renderSessionCard(i, s))
 			b.WriteString("\n")
 			if i == m.focused && m.mode == modeQuickInput {
 				b.WriteString(m.renderInlineInput("  "))
@@ -61,7 +60,6 @@ func (m Model) viewSessionList() string {
 				b.WriteString("\n")
 			}
 		}
-		b.WriteString("\n")
 	}
 
 	if m.mode == modeMenu && len(m.sessions) > 0 {
@@ -81,59 +79,67 @@ func (m Model) viewSessionList() string {
 	return b.String()
 }
 
-func (m Model) renderSessionRow(i int, s *session.Session) string {
+func (m Model) renderSessionCard(i int, s *session.Session) string {
 	focused := i == m.focused
+	innerWidth := m.width - 4
+	if innerWidth < 4 {
+		innerWidth = 4
+	}
 
+	// line 1: session name (left) + claude icon (right)
 	icon := "  "
 	if s.IsClaude {
 		icon = m.theme.ClaudeIcon.Render("◆ ")
 	}
-
-	var name string
-	if focused {
-		name = m.theme.SessionNameFocused.Render("[" + s.Name + "]")
-	} else {
-		name = m.theme.SessionName.Render("[" + s.Name + "]")
+	iconW := lipgloss.Width(icon)
+	nameAvail := innerWidth - iconW
+	if nameAvail < 0 {
+		nameAvail = 0
 	}
+	rawName := s.Name
+	if len([]rune(rawName)) > nameAvail {
+		rawName = string([]rune(rawName)[:nameAvail-1]) + "…"
+	}
+	var nameStyled string
+	if focused {
+		nameStyled = m.theme.SessionNameFocused.Render(rawName)
+	} else {
+		nameStyled = m.theme.SessionName.Render(rawName)
+	}
+	line1 := lipgloss.NewStyle().Width(nameAvail).Render(nameStyled) + icon
 
-	var stateBadge string
+	// line 2: status badge + detail/summary
+	var badge string
 	switch s.State {
 	case session.StateIdle:
-		stateBadge = m.theme.Idle.Render("idle")
+		badge = m.theme.Idle.Render("idle")
 	case session.StateRunning:
-		spinner := spinnerFrames[m.spinnerTick%len(spinnerFrames)]
-		stateBadge = m.theme.Running.Render(spinner + " running")
+		badge = m.theme.Running.Render(spinnerFrames[m.spinnerTick%len(spinnerFrames)] + " running")
 	case session.StateDone:
-		stateBadge = m.theme.Done.Render("✓ done")
+		badge = m.theme.Done.Render("✓ done")
 	case session.StateWaiting:
-		stateBadge = m.theme.Waiting.Render("waiting")
+		badge = m.theme.Waiting.Render("waiting")
+	}
+	detailAvail := innerWidth - lipgloss.Width(badge) - 2
+	if detailAvail < 0 {
+		detailAvail = 0
+	}
+	detail := m.renderDetail(s, detailAvail)
+	line2 := badge
+	if detail != "" {
+		line2 += "  " + detail
 	}
 
-	var shortcut string
-	if focused && s.State == session.StateWaiting {
-		shortcut = m.theme.Shortcut.Render(" [↵ i]")
-	}
-
-	var note string
-	if s.Note != "" && focused {
-		note = m.theme.Hint.Render("  ✎ " + s.Note)
-	}
-
-	fixedWidth := lipgloss.Width(icon) + lipgloss.Width(name) + 2 +
-		lipgloss.Width(stateBadge) + 2 +
-		lipgloss.Width(shortcut) + lipgloss.Width(note)
-	available := m.width - 2 - fixedWidth - 2
-	if available < 0 {
-		available = 0
-	}
-
-	detail := m.renderDetail(s, available)
-
-	row := fmt.Sprintf("%s%s  %s  %s%s%s", icon, name, stateBadge, detail, shortcut, note)
+	borderColor := m.theme.Shortcut.GetForeground()
 	if focused {
-		row = m.theme.Focused.Width(m.width - 2).Render(row)
+		borderColor = m.theme.SessionNameFocused.GetForeground()
 	}
-	return row
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(innerWidth).
+		Render(line1 + "\n" + line2)
 }
 
 func (m Model) renderDetail(s *session.Session, available int) string {
