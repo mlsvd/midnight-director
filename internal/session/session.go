@@ -69,19 +69,20 @@ func Refresh(s *Session) error {
 	s.Command = cmd
 	s.IsClaude = cmd == "claude"
 
-	// read pane title set via OSC 2 (\033]2;...\007) — works for any process
-	if title, err := tmux.PaneTitle(s.Name); err == nil {
-		s.Title = title
-	}
-
 	if isShell(cmd) {
 		if s.PrevState != StateIdle {
 			s.StableStateSince = time.Now()
+			s.Title = ""
 		}
 		s.State = StateIdle
 		s.Hint = ""
 		s.StreamChunk = ""
 		return nil
+	}
+
+	// read pane title only for non-shell processes (set via OSC 2 escape)
+	if title, err := tmux.PaneTitle(s.Name); err == nil {
+		s.Title = title
 	}
 
 	pane, err := tmux.CapturePanePlain(s.Name)

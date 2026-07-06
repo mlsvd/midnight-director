@@ -135,14 +135,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.viewport.Height != vpH {
 			m.viewport.Height = vpH
 		}
+		m.clampFocused()
 		m.viewport.SetContent(m.buildListContent())
 		m.ensureFocusedVisible()
-
-		if _, isKey := msg.(tea.KeyMsg); !isKey {
-			var vpCmd tea.Cmd
-			m.viewport, vpCmd = m.viewport.Update(msg)
-			cmd = tea.Batch(cmd, vpCmd)
-		}
 	}
 
 	return m, cmd
@@ -278,9 +273,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 
 	case "pgdown", "ctrl+d":
-		m.focused += m.viewportPageSize()
-		if m.focused >= len(m.sessions) {
-			m.focused = len(m.sessions) - 1
+		if len(m.sessions) > 0 {
+			m.focused += m.viewportPageSize()
+			if m.focused >= len(m.sessions) {
+				m.focused = len(m.sessions) - 1
+			}
 		}
 
 	case "pgup", "ctrl+u":
@@ -587,7 +584,22 @@ func sessionRows(s *session.Session) int {
 	return 1
 }
 
+func (m *Model) clampFocused() {
+	if len(m.sessions) == 0 {
+		m.focused = 0
+		return
+	}
+	if m.focused < 0 {
+		m.focused = 0
+	} else if m.focused >= len(m.sessions) {
+		m.focused = len(m.sessions) - 1
+	}
+}
+
 func (m *Model) ensureFocusedVisible() {
+	if len(m.sessions) == 0 || m.viewport.Height == 0 {
+		return
+	}
 	top := 0
 	for i, s := range m.sessions {
 		if i == m.focused {
@@ -595,11 +607,7 @@ func (m *Model) ensureFocusedVisible() {
 		}
 		top += sessionRows(s)
 	}
-	h := 1
-	if m.focused < len(m.sessions) {
-		h = sessionRows(m.sessions[m.focused])
-	}
-	bottom := top + h - 1
+	bottom := top + sessionRows(m.sessions[m.focused]) - 1
 	if top < m.viewport.YOffset {
 		m.viewport.SetYOffset(top)
 	} else if bottom >= m.viewport.YOffset+m.viewport.Height {
