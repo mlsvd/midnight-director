@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,10 +86,48 @@ func refreshScreen(name string) tea.Cmd {
 	}
 }
 
+func rootName(name string) string {
+	if idx := strings.Index(name, "/"); idx >= 0 {
+		return name[:idx]
+	}
+	return name
+}
+
 func sortSessions(sessions []*session.Session) {
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].Name < sessions[j].Name
+	sort.SliceStable(sessions, func(i, j int) bool {
+		ni, nj := sessions[i].Name, sessions[j].Name
+		ri, rj := rootName(ni), rootName(nj)
+		if ri != rj {
+			return ri < rj
+		}
+		// same root: parent before its children
+		if strings.HasPrefix(nj, ni+"/") {
+			return true
+		}
+		if strings.HasPrefix(ni, nj+"/") {
+			return false
+		}
+		return ni < nj
 	})
+}
+
+func (m Model) nextChildName() string {
+	parent := m.sessions[m.focused].Name
+	prefix := parent + "/"
+	max := 0
+	for _, s := range m.sessions {
+		if !strings.HasPrefix(s.Name, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(s.Name, prefix)
+		if strings.Contains(rest, "/") {
+			continue // skip grandchildren
+		}
+		if n, err := strconv.Atoi(rest); err == nil && n > max {
+			max = n
+		}
+	}
+	return fmt.Sprintf("%s/%d", parent, max+1)
 }
 
 func indexByName(sessions []*session.Session, name string) int {
@@ -121,7 +161,7 @@ func (m Model) commandBarHeight() int {
 			maxRows = len(g)
 		}
 	}
-	return 1 + maxRows
+	return 2 + maxRows // 1 top border + help rows + 1 tips line
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -291,6 +331,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, captureScreen(m.focused, m.sessions[m.focused].Name)
 		}
 
+	case "p":
+		if len(m.sessions) > 0 {
+			return m, openPicker(m.sessions[m.focused].Name)
+		}
+
 	case "g":
 		if m.aiCmd != "" && len(m.sessions) > 0 {
 			s := m.sessions[m.focused]
@@ -337,6 +382,11 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.input.Placeholder = "note…"
 			m.input.Focus()
 			return m, textinput.Blink
+		}
+
+	case "c":
+		if len(m.sessions) > 0 {
+			return m, createSession(m.nextChildName())
 		}
 
 	case "n":
@@ -453,21 +503,21 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case modeCommandInput:
 			if len(m.sessions) > 0 {
 				s := m.sessions[m.focused]
-				_ = tmux.SendKeys(s.Name, val)
+				_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
 			}
 			m.mode = modeList
 
 		case modeQuickInput:
 			if len(m.sessions) > 0 {
 				s := m.sessions[m.focused]
-				_ = tmux.SendKeys(s.Name, val)
+				_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
 			}
 			m.mode = modeList
 
 		case modeScreenInput:
 			if len(m.sessions) > 0 {
 				s := m.sessions[m.focused]
-				_ = tmux.SendKeys(s.Name, val)
+				_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
 			}
 			m.mode = modeList
 		}
@@ -620,4 +670,60 @@ func connectToSession(name string) tea.Cmd {
 		exec.Command("tmux", "attach-session", "-t", name),
 		func(err error) tea.Msg { return nil },
 	)
+}
+
+func openPicker(sessionName string) tea.Cmd {
+	self, _ := os.Executable()
+	return tea.ExecProcess(
+		exec.Command(self, "--picker", sessionName),
+		func(err error) tea.Msg { return nil },
+	)
+}
+
+// resolveFromRefs replaces {{from:target}} and {{from:target:Nl}} references
+// in text with live pane content captured from the target tmux session.
+func resolveFromRefs(text, currentSession string) string {
+	const open, close = "{{from:", "}}"
+	for {
+		start := strings.Index(text, open)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(text[start:], close)
+		if end < 0 {
+			break
+		}
+		end += start + len(close)
+		inner := text[start+len(open) : end-len(close)] // "target" or "target:Nl"
+
+		target, lineSpec, _ := strings.Cut(inner, ":")
+		if target == "parent" {
+			if idx := strings.LastIndex(currentSession, "/"); idx >= 0 {
+				target = currentSession[:idx]
+			} else {
+				text = text[:start] + text[end:] // no parent — remove placeholder
+				continue
+			}
+		}
+
+		content, err := tmux.CapturePanePlain(target)
+		if err != nil {
+			text = text[:start] + text[end:]
+			continue
+		}
+		content = strings.TrimRight(content, "\n")
+
+		if lineSpec != "" && strings.HasSuffix(lineSpec, "l") {
+			if n, err2 := strconv.Atoi(strings.TrimSuffix(lineSpec, "l")); err2 == nil && n > 0 {
+				lines := strings.Split(content, "\n")
+				if len(lines) > n {
+					lines = lines[len(lines)-n:]
+				}
+				content = strings.Join(lines, "\n")
+			}
+		}
+
+		text = text[:start] + content + text[end:]
+	}
+	return text
 }

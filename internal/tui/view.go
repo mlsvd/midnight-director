@@ -130,11 +130,19 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 	focused := i == m.focused
 	rowWidth := m.width - 2 // subtract scrollbar column
 
-	// left focus bar
-	bar := "  "
-	if focused {
-		bar = m.theme.SessionNameFocused.Render("▌ ")
+	depth := strings.Count(s.Name, "/")
+	treeIndent := strings.Repeat("  ", depth)
+
+	var indicator string
+	switch {
+	case focused:
+		indicator = m.theme.SessionNameFocused.Render("▌")
+	case depth > 0:
+		indicator = m.theme.Hint.Render("└")
+	default:
+		indicator = " "
 	}
+	bar := treeIndent + indicator + " "
 
 	// claude icon
 	icon := "  "
@@ -179,7 +187,8 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 }
 
 func (m Model) renderNoteLine(s *session.Session) string {
-	const indent = "          "
+	depth := strings.Count(s.Name, "/")
+	indent := strings.Repeat("  ", depth) + "          "
 	available := m.width - 2 - len([]rune(indent)) - len("note: ")
 	note := []rune(s.Note)
 	if len(note) > available && available > 1 {
@@ -286,5 +295,11 @@ func (m Model) viewCommandBar() string {
 	h := m.help
 	h.Width = m.width - 6
 	h.ShowAll = true
-	return m.theme.CommandBar.Width(m.width - 2).Render(h.View(m.helpKeys()))
+
+	promptsPath := "~/.config/midnight-director/prompts.json"
+	tips := m.theme.Hint.Render(
+		"prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session",
+	)
+
+	return m.theme.CommandBar.Width(m.width - 2).Render(h.View(m.helpKeys()) + "\n" + tips)
 }

@@ -2,7 +2,9 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -92,12 +94,22 @@ func AttachArgs(session string) []string {
 	return []string{"tmux", "attach-session", "-t", session}
 }
 
-// RegisterPickerBinding installs a global tmux key binding (M-p) that opens
-// the prompt picker popup targeting whichever session is currently active.
+// RegisterPickerBinding writes a stable wrapper script and registers a tmux
+// key binding pointing to it. The script is rewritten on every launch so it
+// always exec's the current binary, while the tmux binding path never changes.
 func RegisterPickerBinding(execPath string) error {
-	// Single-quote execPath so spaces in the path don't break shell parsing.
-	// #{session_name} is expanded by tmux at keypress time before shell sees it.
-	cmd := fmt.Sprintf("'%s' --picker #{session_name}", execPath)
+	configDir := filepath.Join(os.Getenv("HOME"), ".config", "midnight-director")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+
+	scriptPath := filepath.Join(configDir, "picker.sh")
+	script := fmt.Sprintf("#!/bin/sh\nexec '%s' --picker \"$1\"\n", execPath)
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		return err
+	}
+
+	cmd := fmt.Sprintf("'%s' #{session_name}", scriptPath)
 	return exec.Command("tmux", "bind-key", "-n", "M-r",
 		"display-popup", "-E", "-w", "80%", "-h", "80%", cmd,
 	).Run()

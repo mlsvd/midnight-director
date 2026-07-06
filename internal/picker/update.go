@@ -1,10 +1,12 @@
 package picker
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/malisev/midnight-director/internal/tmux"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -63,11 +65,26 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.selected = item.Prompt
-		m.placeholders = m.selected.Placeholders()
 		m.fillValues = map[string]string{}
+
+		// pre-resolve from: placeholders without showing an input field
+		allPH := m.selected.Placeholders()
+		var manual []string
+		for _, ph := range allPH {
+			if strings.HasPrefix(ph, "from:") {
+				if val, err := resolveFrom(ph, m.session); err == nil {
+					m.fillValues[ph] = val
+				} else {
+					m.fillValues[ph] = "" // failed gracefully
+				}
+			} else {
+				manual = append(manual, ph)
+			}
+		}
+		m.placeholders = manual
 		m.fillIdx = 0
 		if len(m.placeholders) == 0 {
-			return m.enterEdit(m.selected.Text)
+			return m.enterEdit(m.selected.Fill(m.fillValues))
 		}
 		m.state = stateFill
 		m.fillInput.SetValue("")
@@ -130,4 +147,38 @@ func (m Model) enterEdit(text string) (Model, tea.Cmd) {
 	cmd := m.editor.Focus()
 	m.editor.CursorEnd()
 	return m, cmd
+}
+
+// resolveFrom resolves a "from:target" or "from:target:Nl" placeholder
+// by capturing the target session's pane content.
+// "parent" keyword resolves to the parent of currentSession via name prefix.
+func resolveFrom(ph, currentSession string) (string, error) {
+	inner := strings.TrimPrefix(ph, "from:")
+	target, lineSpec, _ := strings.Cut(inner, ":")
+
+	if target == "parent" {
+		if idx := strings.LastIndex(currentSession, "/"); idx >= 0 {
+			target = currentSession[:idx]
+		} else {
+			return "", nil // no parent
+		}
+	}
+
+	content, err := tmux.CapturePanePlain(target)
+	if err != nil {
+		return "", err
+	}
+	content = strings.TrimRight(content, "\n")
+
+	if lineSpec != "" && strings.HasSuffix(lineSpec, "l") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(lineSpec, "l")); err == nil && n > 0 {
+			lines := strings.Split(content, "\n")
+			if len(lines) > n {
+				lines = lines[len(lines)-n:]
+			}
+			content = strings.Join(lines, "\n")
+		}
+	}
+
+	return content, nil
 }
