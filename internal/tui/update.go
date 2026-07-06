@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"fmt"
 	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -40,7 +42,7 @@ func discoverSessions() tea.Cmd {
 }
 
 func tickEvery(d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(t time.Time) tea.Msg {
+	return tea.Every(d, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -97,14 +99,45 @@ func indexByName(sessions []*session.Session, name string) int {
 	return len(sessions) - 1
 }
 
+func (m Model) windowTitle() string {
+	running := 0
+	for _, s := range m.sessions {
+		if s.State == session.StateRunning {
+			running++
+		}
+	}
+	if running > 0 {
+		return fmt.Sprintf("midnight director · %d running", running)
+	}
+	return fmt.Sprintf("midnight director · %d sessions", len(m.sessions))
+}
+
+// commandBarHeight returns how many terminal rows the command bar occupies
+// (top border + full help content lines).
+func (m Model) commandBarHeight() int {
+	maxRows := 0
+	for _, g := range m.helpKeys().FullHelp() {
+		if len(g) > maxRows {
+			maxRows = len(g)
+		}
+	}
+	return 1 + maxRows
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m, cmd := m.innerUpdate(msg)
 
 	if m.width > 0 {
+		vpH := m.height - 1 - m.commandBarHeight()
+		if vpH < 1 {
+			vpH = 1
+		}
+		if m.viewport.Height != vpH {
+			m.viewport.Height = vpH
+		}
 		m.viewport.SetContent(m.buildListContent())
 		m.ensureFocusedVisible()
 
-		// forward non-key messages (mouse wheel, resize, etc.) to viewport
 		if _, isKey := msg.(tea.KeyMsg); !isKey {
 			var vpCmd tea.Cmd
 			m.viewport, vpCmd = m.viewport.Update(msg)
@@ -121,23 +154,32 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		vpHeight := m.height - 3 // title (1) + command bar (2)
+		vpHeight := m.height - 1 - m.commandBarHeight()
 		if vpHeight < 1 {
 			vpHeight = 1
 		}
 		m.viewport = viewport.New(m.width-2, vpHeight)
+		m.help.Width = m.width - 6
 		return m, nil
+
+	case tea.ResumeMsg:
+		return m, tea.Batch(discoverSessions(), tickEvery(5*time.Second), m.spinner.Tick)
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 
 	case sessionsDiscoveredMsg:
 		m.sessions = msg
 		sortSessions(m.sessions)
-		return m, nil
+		return m, tea.SetWindowTitle(m.windowTitle())
 
 	case sessionCreatedMsg:
 		m.sessions = append(m.sessions, msg)
 		sortSessions(m.sessions)
 		m.focused = indexByName(m.sessions, msg.Name)
-		return m, nil
+		return m, tea.SetWindowTitle(m.windowTitle())
 
 	case pollMsg:
 		if msg.idx < len(m.sessions) {
@@ -172,7 +214,6 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tickMsg:
 		var cmds []tea.Cmd
-		m.spinnerTick++
 		for i, s := range m.sessions {
 			cmds = append(cmds, pollSession(i, s))
 		}
@@ -180,6 +221,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 			cmds = append(cmds, refreshScreen(m.sessions[m.focused].Name))
 		}
 		cmds = append(cmds, tickEvery(5*time.Second))
+		cmds = append(cmds, tea.SetWindowTitle(m.windowTitle()))
 		return m, tea.Batch(cmds...)
 
 	case errMsg:
@@ -222,6 +264,9 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
+	case "ctrl+z":
+		return m, tea.Suspend
+
 	case "up", "k":
 		if m.focused > 0 {
 			m.focused--
@@ -230,6 +275,33 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "down", "j":
 		if m.focused < len(m.sessions)-1 {
 			m.focused++
+		}
+
+	case "pgdown", "ctrl+d":
+		m.focused += m.viewportPageSize()
+		if m.focused >= len(m.sessions) {
+			m.focused = len(m.sessions) - 1
+		}
+
+	case "pgup", "ctrl+u":
+		m.focused -= m.viewportPageSize()
+		if m.focused < 0 {
+			m.focused = 0
+		}
+
+	case " ":
+		if len(m.sessions) > 0 {
+			return m, captureScreen(m.focused, m.sessions[m.focused].Name)
+		}
+
+	case "g":
+		if m.aiCmd != "" && len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			if !s.IsSummarizing {
+				s.IsSummarizing = true
+				s.Summary = ""
+				return m, summarizeSession(m.focused, s.LastOutput, m.aiCmd)
+			}
 		}
 
 	case "right", "l":
@@ -328,7 +400,7 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case menuGetScreen:
-		m.mode = modeList // will switch to modeScreenView after capture
+		m.mode = modeList
 		return m, captureScreen(m.focused, s.Name)
 
 	case menuConnect:
@@ -410,9 +482,17 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) viewportPageSize() int {
+	n := m.viewport.Height / 2
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q":
+	case "esc", "q", " ":
 		m.mode = modeList
 	case "i", "enter":
 		if len(m.sessions) > 0 {
@@ -439,6 +519,7 @@ func (m Model) handleKillKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		m.mode = modeList
+		return m, tea.SetWindowTitle(m.windowTitle())
 	default:
 		m.mode = modeList
 	}
@@ -499,10 +580,26 @@ func createSession(name string) tea.Cmd {
 	}
 }
 
+func sessionRows(s *session.Session) int {
+	if s.Note != "" {
+		return 2
+	}
+	return 1
+}
+
 func (m *Model) ensureFocusedVisible() {
-	const cardHeight = 4 // top border + 2 content lines + bottom border
-	top := m.focused * cardHeight
-	bottom := top + cardHeight - 1
+	top := 0
+	for i, s := range m.sessions {
+		if i == m.focused {
+			break
+		}
+		top += sessionRows(s)
+	}
+	h := 1
+	if m.focused < len(m.sessions) {
+		h = sessionRows(m.sessions[m.focused])
+	}
+	bottom := top + h - 1
 	if top < m.viewport.YOffset {
 		m.viewport.SetYOffset(top)
 	} else if bottom >= m.viewport.YOffset+m.viewport.Height {
@@ -516,4 +613,3 @@ func connectToSession(name string) tea.Cmd {
 		func(err error) tea.Msg { return nil },
 	)
 }
-

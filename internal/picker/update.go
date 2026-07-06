@@ -3,6 +3,7 @@ package picker
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -13,6 +14,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.editor.SetWidth(m.width - 6)
 		m.editor.SetHeight(m.height - 10)
+		// 4 = outer border (2) + title + blank line; 2 = hint + margin
+		m.list.SetSize(m.width-4, m.height-6)
 		return m, nil
 	case tea.KeyMsg:
 		switch m.state {
@@ -32,11 +35,7 @@ func (m Model) forwardToActive(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.state {
 	case stateList:
-		m.filter, cmd = m.filter.Update(msg)
-		m.filtered = applyFilter(m.allPrompts, m.filter.Value())
-		if m.cursor >= len(m.filtered) {
-			m.cursor = max(0, len(m.filtered)-1)
-		}
+		m.list, cmd = m.list.Update(msg)
 	case stateFill:
 		m.fillInput, cmd = m.fillInput.Update(msg)
 	case stateEdit:
@@ -46,28 +45,24 @@ func (m Model) forwardToActive(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "ctrl+c":
+	// let the list handle esc to clear an active filter; only quit when not filtering
+	if msg.String() == "esc" || msg.String() == "ctrl+c" {
+		if m.list.FilterState() == list.Filtering {
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		}
 		m.done = true
 		return m, tea.Quit
+	}
 
-	case "up", "ctrl+p":
-		if m.cursor > 0 {
-			m.cursor--
-		}
-		return m, nil
-
-	case "down", "ctrl+n":
-		if m.cursor < len(m.filtered)-1 {
-			m.cursor++
-		}
-		return m, nil
-
-	case "enter":
-		if len(m.filtered) == 0 {
+	// intercept enter when not filtering to select the current item
+	if msg.String() == "enter" && m.list.FilterState() != list.Filtering {
+		item, ok := m.list.SelectedItem().(promptItem)
+		if !ok {
 			return m, nil
 		}
-		m.selected = m.filtered[m.cursor]
+		m.selected = item.Prompt
 		m.placeholders = m.selected.Placeholders()
 		m.fillValues = map[string]string{}
 		m.fillIdx = 0
@@ -80,14 +75,17 @@ func (m Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.fillInput.Focus()
 	}
 
-	return m.forwardToActive(msg)
+	// forward everything else (navigation, filter activation, typing) to the list
+	var cmd tea.Cmd
+	m.list, cmd = m.list.Update(msg)
+	return m, cmd
 }
 
 func (m Model) handleFillKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.state = stateList
-		return m, m.filter.Focus()
+		return m, nil
 
 	case "enter":
 		m.fillValues[m.placeholders[m.fillIdx]] = m.fillInput.Value()
@@ -113,7 +111,7 @@ func (m Model) handleEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.fillInput.Focus()
 		}
 		m.state = stateList
-		return m, m.filter.Focus()
+		return m, nil
 
 	case "ctrl+s":
 		text := strings.TrimSpace(m.editor.Value())
@@ -132,11 +130,4 @@ func (m Model) enterEdit(text string) (Model, tea.Cmd) {
 	cmd := m.editor.Focus()
 	m.editor.CursorEnd()
 	return m, cmd
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

@@ -33,34 +33,14 @@ func (m Model) View() string {
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColorFocused).
+		BorderForeground(lipgloss.Color("99")).
 		Width(m.width - 2).
 		Render(inner)
 }
 
 func (m Model) viewList() string {
-	var b strings.Builder
-
-	b.WriteString(m.filter.View())
-	b.WriteString("\n\n")
-
-	if len(m.filtered) == 0 {
-		b.WriteString(styleHint.Render("  no prompts match"))
-	} else {
-		for i, p := range m.filtered {
-			if i == m.cursor {
-				b.WriteString(styleItemFocused.Render("› " + p.Name))
-			} else {
-				b.WriteString(styleItem.Render("  " + p.Name))
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	b.WriteString("\n")
-	b.WriteString(styleHint.Render("↑↓ navigate   ↵ select   esc quit"))
-
-	return b.String()
+	hint := styleHint.Render("/ filter   ↑↓ navigate   ↵ select   esc quit")
+	return m.list.View() + "\n" + hint
 }
 
 func (m Model) viewFill() string {

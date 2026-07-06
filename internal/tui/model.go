@@ -3,6 +3,8 @@ package tui
 import (
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,8 +62,9 @@ type Model struct {
 	menuCursor    int
 	input         textinput.Model
 	viewport      viewport.Model
+	spinner       spinner.Model
+	help          help.Model
 	screenText    string
-	spinnerTick   int
 	width         int
 	height        int
 	darkMode      bool
@@ -76,8 +79,12 @@ func New() Model {
 	ti.Placeholder = ""
 	ti.CharLimit = 500
 
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
+
 	return Model{
 		input:    ti,
+		spinner:  sp,
+		help:     help.New(),
 		darkMode: true,
 		theme:    darkTheme(),
 		aiCmd:    ai.Detect(),
@@ -88,5 +95,6 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		discoverSessions(),
 		tickEvery(5*time.Second),
+		m.spinner.Tick,
 	)
 }

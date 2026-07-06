@@ -12,6 +12,7 @@ type Theme struct {
 	Done               lipgloss.Style
 	Waiting            lipgloss.Style
 	Hint               lipgloss.Style
+	Note               lipgloss.Style
 	StreamChunk        lipgloss.Style
 	Summary            lipgloss.Style
 	ClaudeIcon         lipgloss.Style
@@ -45,6 +46,7 @@ func darkTheme() Theme {
 		Done:               lipgloss.NewStyle().Foreground(lipgloss.Color("243")),
 		Waiting:            lipgloss.NewStyle().Foreground(yellow),
 		Hint:               lipgloss.NewStyle().Foreground(dim).Italic(true),
+		Note:               lipgloss.NewStyle().Foreground(lipgloss.Color("153")).Italic(true),
 		StreamChunk:        lipgloss.NewStyle().Foreground(cyan),
 		Summary:            lipgloss.NewStyle().Foreground(lipgloss.Color("222")).Bold(true),
 		ClaudeIcon:         lipgloss.NewStyle().Foreground(purple),
@@ -79,6 +81,7 @@ func lightTheme() Theme {
 		Done:               lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
 		Waiting:            lipgloss.NewStyle().Foreground(amber),
 		Hint:               lipgloss.NewStyle().Foreground(dim).Italic(true),
+		Note:               lipgloss.NewStyle().Foreground(lipgloss.Color("67")).Italic(true),
 		StreamChunk:        lipgloss.NewStyle().Foreground(teal),
 		Summary:            lipgloss.NewStyle().Foreground(lipgloss.Color("94")).Bold(true),
 		ClaudeIcon:         lipgloss.NewStyle().Foreground(purple),
@@ -93,4 +96,3 @@ func lightTheme() Theme {
 	}
 }
 
-var spinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}

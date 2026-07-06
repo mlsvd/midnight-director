@@ -34,16 +34,20 @@ func (m Model) View() string {
 }
 
 func (m Model) buildListContent() string {
-	var b strings.Builder
-
 	if len(m.sessions) == 0 {
-		b.WriteString("\n")
-		b.WriteString(m.theme.Empty.Render("  No sessions. Press  n  to create one."))
-		b.WriteString("\n")
-	} else {
+		msg := m.theme.Empty.Render("No sessions. Press  n  to create one.")
+		return lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center, msg)
+	}
+
+	var b strings.Builder
+	{
 		for i, s := range m.sessions {
-			b.WriteString(m.renderSessionCard(i, s))
+			b.WriteString(m.renderSessionRow(i, s))
 			b.WriteString("\n")
+			if s.Note != "" {
+				b.WriteString(m.renderNoteLine(s))
+				b.WriteString("\n")
+			}
 			if i == m.focused {
 				switch m.mode {
 				case modeMenu:
@@ -122,67 +126,66 @@ func (m Model) renderScrollbar() string {
 	return b.String()
 }
 
-func (m Model) renderSessionCard(i int, s *session.Session) string {
+func (m Model) renderSessionRow(i int, s *session.Session) string {
 	focused := i == m.focused
-	innerWidth := m.width - 4
-	if innerWidth < 4 {
-		innerWidth = 4
+	rowWidth := m.width - 2 // subtract scrollbar column
+
+	// left focus bar
+	bar := "  "
+	if focused {
+		bar = m.theme.SessionNameFocused.Render("▌ ")
 	}
 
-	// line 1: session name (left) + claude icon (right)
+	// claude icon
 	icon := "  "
 	if s.IsClaude {
 		icon = m.theme.ClaudeIcon.Render("◆ ")
 	}
-	iconW := lipgloss.Width(icon)
-	nameAvail := innerWidth - iconW
-	if nameAvail < 0 {
-		nameAvail = 0
-	}
-	rawName := s.Name
-	if len([]rune(rawName)) > nameAvail {
-		rawName = string([]rune(rawName)[:nameAvail-1]) + "…"
-	}
+
+	// name
 	var nameStyled string
 	if focused {
-		nameStyled = m.theme.SessionNameFocused.Render(rawName)
+		nameStyled = m.theme.SessionNameFocused.Render(s.Name)
 	} else {
-		nameStyled = m.theme.SessionName.Render(rawName)
+		nameStyled = m.theme.SessionName.Render(s.Name)
 	}
-	line1 := lipgloss.NewStyle().Width(nameAvail).Render(nameStyled) + icon
 
-	// line 2: status badge + detail/summary
+	// status badge
 	var badge string
 	switch s.State {
 	case session.StateIdle:
 		badge = m.theme.Idle.Render("idle")
 	case session.StateRunning:
-		badge = m.theme.Running.Render(spinnerFrames[m.spinnerTick%len(spinnerFrames)] + " running")
+		badge = m.theme.Running.Render(m.spinner.View() + " running")
 	case session.StateDone:
 		badge = m.theme.Done.Render("✓ done")
 	case session.StateWaiting:
 		badge = m.theme.Waiting.Render("waiting")
 	}
-	detailAvail := innerWidth - lipgloss.Width(badge) - 2
+
+	fixed := lipgloss.Width(bar) + lipgloss.Width(icon) + lipgloss.Width(nameStyled) +
+		2 + lipgloss.Width(badge) + 2
+	detailAvail := rowWidth - fixed
 	if detailAvail < 0 {
 		detailAvail = 0
 	}
 	detail := m.renderDetail(s, detailAvail)
-	line2 := badge
-	if detail != "" {
-		line2 += "  " + detail
-	}
 
-	borderColor := m.theme.Shortcut.GetForeground()
+	row := bar + icon + nameStyled + "  " + badge + "  " + detail
 	if focused {
-		borderColor = m.theme.SessionNameFocused.GetForeground()
+		row = m.theme.Focused.Width(rowWidth).Render(row)
 	}
+	return row
+}
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderColor).
-		Width(innerWidth).
-		Render(line1 + "\n" + line2)
+func (m Model) renderNoteLine(s *session.Session) string {
+	const indent = "          "
+	available := m.width - 2 - len([]rune(indent)) - len("note: ")
+	note := []rune(s.Note)
+	if len(note) > available && available > 1 {
+		note = append(note[:available-1], '…')
+	}
+	return m.theme.Note.Render(indent + "note: " + string(note))
 }
 
 func (m Model) renderDetail(s *session.Session, available int) string {
@@ -234,7 +237,7 @@ func (m Model) viewMenu() string {
 			rows = append(rows, m.theme.MenuNormal.Render(item.label))
 		}
 	}
-	return "  " + m.theme.Menu.Render(strings.Join(rows, "\n"))
+	return lipgloss.NewStyle().MarginLeft(2).Render(m.theme.Menu.Render(strings.Join(rows, "\n")))
 }
 
 func (m Model) viewScreen() string {
@@ -280,30 +283,8 @@ func (m Model) viewScreen() string {
 }
 
 func (m Model) viewCommandBar() string {
-	themeLabel := "light"
-	if m.darkMode {
-		themeLabel = "dark"
-	}
-
-	var aiHint string
-	if m.aiCmd == "" {
-		aiHint = "s no-ai"
-	} else if m.autoSummarize {
-		aiHint = "s sum:on"
-	} else {
-		aiHint = "s sum:off"
-	}
-
-	left := "> "
-	right := m.theme.Shortcut.Render(
-		fmt.Sprintf("n new   i input   e rename   a note   t %s   %s   q quit", themeLabel, aiHint),
-	)
-
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
-	if gap < 1 {
-		return m.theme.CommandBar.Width(m.width - 2).Render(left)
-	}
-
-	bar := left + strings.Repeat(" ", gap) + right
-	return m.theme.CommandBar.Width(m.width - 2).Render(bar)
+	h := m.help
+	h.Width = m.width - 6
+	h.ShowAll = true
+	return m.theme.CommandBar.Width(m.width - 2).Render(h.View(m.helpKeys()))
 }
