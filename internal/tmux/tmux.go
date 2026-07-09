@@ -97,6 +97,29 @@ func AttachArgs(session string) []string {
 // RegisterPickerBinding writes a stable wrapper script and registers a tmux
 // key binding pointing to it. The script is rewritten on every launch so it
 // always exec's the current binary, while the tmux binding path never changes.
+// CurrentSession returns the name of the tmux session midnight-director is
+// running in, or "" if not inside tmux.
+func CurrentSession() string {
+	if os.Getenv("TMUX") == "" {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// RegisterBackBinding registers M-b as a global key that switches back to
+// the midnight-director session from any other session.
+func RegisterBackBinding(ourSession string) error {
+	if ourSession == "" {
+		return nil
+	}
+	return exec.Command("tmux", "bind-key", "-n", "M-b",
+		"switch-client", "-t", ourSession).Run()
+}
+
 func RegisterPickerBinding(execPath string) error {
 	configDir := filepath.Join(os.Getenv("HOME"), ".config", "midnight-director")
 	if err := os.MkdirAll(configDir, 0755); err != nil {

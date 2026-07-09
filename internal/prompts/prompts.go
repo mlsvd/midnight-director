@@ -12,7 +12,7 @@ type Prompt struct {
 	Text string `json:"text"`
 }
 
-var placeholderRe = regexp.MustCompile(`\{\{(\w+)\}\}`)
+var placeholderRe = regexp.MustCompile(`\{\{([^}]+)\}\}`)
 
 func (p Prompt) Placeholders() []string {
 	seen := map[string]bool{}

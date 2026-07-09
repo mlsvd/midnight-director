@@ -20,6 +20,10 @@ var inputWchans = map[string]bool{
 	"ttyin":                 true, // macOS: waiting for terminal input
 }
 
+func IsWaitingForInput(shellPID int) bool {
+	return isWaitingForInput(shellPID)
+}
+
 func isWaitingForInput(shellPID int) bool {
 	tpgid, err := getForegroundPGID(shellPID)
 	if err != nil || tpgid <= 0 || tpgid == shellPID {

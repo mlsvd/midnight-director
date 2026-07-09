@@ -1,11 +1,16 @@
 package picker
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/malisev/midnight-director/internal/session"
 	"github.com/malisev/midnight-director/internal/tmux"
 )
 
@@ -27,6 +32,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleFillKey(msg)
 		case stateEdit:
 			return m.handleEditKey(msg)
+		case stateWarn:
+			return m.handleWarnKey(msg)
 		}
 	}
 
@@ -132,10 +139,15 @@ func (m Model) handleEditKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+s":
 		text := strings.TrimSpace(m.editor.Value())
-		if text != "" && m.sendFn != nil {
-			_ = m.sendFn(m.session, text)
+		if text == "" {
+			return m, tea.Quit
 		}
-		return m, tea.Quit
+		if !sessionIsReady(m.session) {
+			m.warnText = text
+			m.state = stateWarn
+			return m, nil
+		}
+		return m.doSend(text)
 	}
 
 	return m.forwardToActive(msg)
@@ -147,6 +159,57 @@ func (m Model) enterEdit(text string) (Model, tea.Cmd) {
 	cmd := m.editor.Focus()
 	m.editor.CursorEnd()
 	return m, cmd
+}
+
+func (m Model) handleWarnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "s":
+		return m.doSend(m.warnText)
+	case "c":
+		_ = copyToClipboard(m.warnText)
+		_ = os.WriteFile(pickerSentPath(), []byte(m.session), 0600)
+		return m, tea.Quit
+	case "esc":
+		m.state = stateEdit
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) doSend(text string) (tea.Model, tea.Cmd) {
+	if m.sendFn != nil {
+		_ = m.sendFn(m.session, text)
+	}
+	_ = os.WriteFile(pickerSentPath(), []byte(m.session), 0600)
+	return m, tea.Quit
+}
+
+func pickerSentPath() string {
+	return filepath.Join(os.TempDir(), ".midnight-director-picker-sent")
+}
+
+func sessionIsReady(name string) bool {
+	pid, err := tmux.PanePID(name)
+	if err != nil || pid <= 0 {
+		return false
+	}
+	return session.IsWaitingForInput(pid)
+}
+
+func copyToClipboard(text string) error {
+	tools := [][]string{
+		{"xclip", "-selection", "clipboard"},
+		{"xsel", "--clipboard", "--input"},
+		{"wl-copy"},
+	}
+	for _, args := range tools {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Stdin = strings.NewReader(text)
+		if cmd.Run() == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("no clipboard tool found (tried xclip, xsel, wl-copy)")
 }
 
 // resolveFrom resolves a "from:target" or "from:target:Nl" placeholder

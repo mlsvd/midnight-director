@@ -263,6 +263,9 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		m.err = msg
 		return m, nil
 
+	case pickerSentMsg:
+		return m, connectToSession(string(msg), m.backHint())
+
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -333,7 +336,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case "p":
 		if len(m.sessions) > 0 {
-			return m, openPicker(m.sessions[m.focused].Name)
+			return m, openPicker(m.sessions[m.focused].Name, m.darkMode)
 		}
 
 	case "g":
@@ -452,7 +455,7 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 
 	case menuConnect:
 		m.mode = modeList
-		return m, connectToSession(s.Name)
+		return m, connectToSession(s.Name, m.backHint())
 
 	case menuSummarize:
 		m.mode = modeList
@@ -461,6 +464,10 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 			s.Summary = ""
 			return m, summarizeSession(m.focused, s.LastOutput, m.aiCmd)
 		}
+
+	case menuPrompt:
+		m.mode = modeList
+		return m, openPicker(s.Name, m.darkMode)
 
 	case menuKill:
 		m.mode = modeKillConfirm
@@ -665,19 +672,53 @@ func (m *Model) ensureFocusedVisible() {
 	}
 }
 
-func connectToSession(name string) tea.Cmd {
+func (m Model) backHint() string {
+	if m.mySession == "" {
+		return ""
+	}
+	return "M-b · back to midnight-director"
+}
+
+func connectToSession(name, backHint string) tea.Cmd {
+	if backHint != "" {
+		_ = exec.Command("tmux", "set-hook", "-t", name, "client-attached",
+			fmt.Sprintf("display-message '%s'", backHint)).Run()
+	}
 	return tea.ExecProcess(
 		exec.Command("tmux", "attach-session", "-t", name),
-		func(err error) tea.Msg { return nil },
+		func(err error) tea.Msg {
+			if backHint != "" {
+				_ = exec.Command("tmux", "set-hook", "-u", "-t", name, "client-attached").Run()
+			}
+			return nil
+		},
 	)
 }
 
-func openPicker(sessionName string) tea.Cmd {
+type pickerSentMsg string
+
+func openPicker(sessionName string, darkMode bool) tea.Cmd {
 	self, _ := os.Executable()
+	theme := "dark"
+	if !darkMode {
+		theme = "light"
+	}
+	sentPath := pickerSentPath()
 	return tea.ExecProcess(
-		exec.Command(self, "--picker", sessionName),
-		func(err error) tea.Msg { return nil },
+		exec.Command(self, "--picker", sessionName, theme),
+		func(err error) tea.Msg {
+			data, readErr := os.ReadFile(sentPath)
+			os.Remove(sentPath)
+			if readErr == nil && len(data) > 0 {
+				return pickerSentMsg(strings.TrimSpace(string(data)))
+			}
+			return nil
+		},
 	)
+}
+
+func pickerSentPath() string {
+	return fmt.Sprintf("%s/.midnight-director-picker-sent", os.TempDir())
 }
 
 // resolveFromRefs replaces {{from:target}} and {{from:target:Nl}} references

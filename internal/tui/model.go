@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/malisev/midnight-director/internal/ai"
 	"github.com/malisev/midnight-director/internal/session"
+	"github.com/malisev/midnight-director/internal/tmux"
 )
 
 type viewMode int
@@ -35,6 +36,7 @@ const (
 	menuConnect
 	menuKill
 	menuSummarize
+	menuPrompt
 )
 
 var menuItems = []struct {
@@ -43,6 +45,7 @@ var menuItems = []struct {
 }{
 	{menuConnect, "connect"},
 	{menuCommand, "command"},
+	{menuPrompt, "use prompt"},
 	{menuGetScreen, "get screen"},
 	{menuSummarize, "summarize"},
 	{menuKill, "kill"},
@@ -71,6 +74,7 @@ type Model struct {
 	theme         Theme
 	autoSummarize bool
 	aiCmd         string
+	mySession     string // tmux session midnight-director itself runs in
 	err           error
 }
 
@@ -82,12 +86,13 @@ func New() Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 
 	return Model{
-		input:    ti,
-		spinner:  sp,
-		help:     help.New(),
-		darkMode: true,
-		theme:    darkTheme(),
-		aiCmd:    ai.Detect(),
+		input:     ti,
+		spinner:   sp,
+		help:      help.New(),
+		darkMode:  true,
+		theme:     darkTheme(),
+		aiCmd:     ai.Detect(),
+		mySession: tmux.CurrentSession(),
 	}
 }
 
