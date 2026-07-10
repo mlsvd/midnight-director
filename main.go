@@ -12,13 +12,15 @@ import (
 )
 
 func main() {
-	if len(os.Args) == 3 && os.Args[1] == "--picker" {
-		runPicker(os.Args[2])
+	if len(os.Args) >= 3 && os.Args[1] == "--picker" {
+		darkMode := len(os.Args) < 4 || os.Args[3] != "light"
+		runPicker(os.Args[2], darkMode)
 		return
 	}
 
 	execPath, _ := os.Executable()
 	_ = tmux.RegisterPickerBinding(execPath)
+	_ = tmux.RegisterBackBinding(tmux.CurrentSession())
 
 	p := tea.NewProgram(
 		tui.New(),
@@ -31,14 +33,14 @@ func main() {
 	}
 }
 
-func runPicker(session string) {
+func runPicker(session string, darkMode bool) {
 	ps, err := prompts.Load(prompts.DefaultPath())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading prompts: %v\n", err)
 		os.Exit(1)
 	}
 
-	m := picker.New(ps, session, tmux.SendKeys)
+	m := picker.New(ps, session, darkMode, tmux.SendKeys)
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
