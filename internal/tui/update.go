@@ -19,6 +19,7 @@ import (
 )
 
 type sessionsDiscoveredMsg []*session.Session
+type clearRenamedMsg struct{}
 type sessionCreatedMsg *session.Session
 type liveScreenMsg string
 type summaryResultMsg struct {
@@ -261,6 +262,10 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg
+		return m, nil
+
+	case clearRenamedMsg:
+		m.renamedSession = ""
 		return m, nil
 
 	case pickerSentMsg:
@@ -593,6 +598,11 @@ func (m Model) handleRenameKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			s := m.sessions[m.focused]
 			if err := tmux.RenameSession(s.Name, val); err == nil {
 				s.Name = val
+				sortSessions(m.sessions)
+				m.focused = indexByName(m.sessions, val)
+				m.renamedSession = val
+				m.mode = modeList
+				return m, clearRenamedAfter()
 			}
 		}
 		m.mode = modeList
@@ -601,6 +611,13 @@ func (m Model) handleRenameKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func clearRenamedAfter() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(1500 * time.Millisecond)
+		return clearRenamedMsg{}
+	}
 }
 
 func (m Model) handleAnnotateKey(msg tea.KeyMsg) (Model, tea.Cmd) {

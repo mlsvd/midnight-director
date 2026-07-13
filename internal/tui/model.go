@@ -70,12 +70,13 @@ type Model struct {
 	screenText    string
 	width         int
 	height        int
-	darkMode      bool
-	theme         Theme
-	autoSummarize bool
-	aiCmd         string
-	mySession     string // tmux session midnight-director itself runs in
-	err           error
+	darkMode       bool
+	theme          Theme
+	autoSummarize  bool
+	aiCmd          string
+	mySession      string // tmux session midnight-director itself runs in
+	renamedSession string // briefly set after rename to drive the moved indicator
+	err            error
 }
 
 func New() Model {

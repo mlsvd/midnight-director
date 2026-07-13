@@ -135,6 +135,9 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 
 	var indicator string
 	switch {
+	case m.renamedSession == s.Name:
+		// flash green for ~1.5s after a rename to show the session moved
+		indicator = m.theme.Running.Render("▌")
 	case focused:
 		indicator = m.theme.SessionNameFocused.Render("▌")
 	case depth > 0:
@@ -297,9 +300,16 @@ func (m Model) viewCommandBar() string {
 	h.ShowAll = true
 
 	promptsPath := "~/.config/midnight-director/prompts.json"
-	tips := m.theme.Hint.Render(
-		"prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session",
-	)
+	tipsText := "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
 
+	// Truncate to one line so the bar height stays predictable on narrow terminals.
+	// CommandBar is Width(m.width-2) with Padding(0,1), so inner width = m.width-4.
+	if innerW := m.width - 4; innerW > 0 {
+		if runes := []rune(tipsText); len(runes) > innerW {
+			tipsText = string(runes[:innerW-1]) + "…"
+		}
+	}
+
+	tips := m.theme.Hint.Render(tipsText)
 	return m.theme.CommandBar.Width(m.width - 2).Render(h.View(m.helpKeys()) + "\n" + tips)
 }
