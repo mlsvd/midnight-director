@@ -29,6 +29,9 @@ func ListSessions() ([]string, error) {
 }
 
 func NewSession(name string) error {
+	// Ensure the server is running before creating a session. On macOS over SSH,
+	// new-session hangs when it has to start the daemon itself; start-server avoids that.
+	exec.Command("tmux", "start-server").Run() //nolint:errcheck
 	return exec.Command("tmux", "new-session", "-d", "-s", name).Run()
 }
 
