@@ -38,6 +38,7 @@ func discoverSessions() tea.Cmd {
 		for _, n := range names {
 			s := &session.Session{Name: n}
 			_ = session.Refresh(s)
+			session.LoadMark(s)
 			sessions = append(sessions, s)
 		}
 		return sessionsDiscoveredMsg(sessions)
@@ -298,6 +299,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleRenameKey(msg)
 	case modeAnnotateInput:
 		return m.handleAnnotateKey(msg)
+	case modeMarkSelect:
+		return m.handleMarkSelectKey(msg)
 	}
 	return m, nil
 }
@@ -422,13 +425,14 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleMenuKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	entries := m.menuEntries()
 	switch msg.String() {
 	case "up", "k":
 		if m.menuCursor > 0 {
 			m.menuCursor--
 		}
 	case "down", "j":
-		if m.menuCursor < len(menuItems)-1 {
+		if m.menuCursor < len(entries)-1 {
 			m.menuCursor++
 		}
 	case "left", "esc":
@@ -446,7 +450,7 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 	}
 	s := m.sessions[m.focused]
 
-	switch menuItems[m.menuCursor].item {
+	switch m.menuEntries()[m.menuCursor].item {
 	case menuCommand:
 		m.mode = modeCommandInput
 		m.input.SetValue("")
@@ -474,8 +478,37 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 		m.mode = modeList
 		return m, openPicker(s.Name, m.darkMode)
 
+	case menuMark:
+		m.mode = modeMarkSelect
+		m.markCursor = 0
+
+	case menuResetMark:
+		_ = session.SetMark(s, "")
+		m.mode = modeList
+
 	case menuKill:
 		m.mode = modeKillConfirm
+	}
+	return m, nil
+}
+
+func (m Model) handleMarkSelectKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.markCursor > 0 {
+			m.markCursor--
+		}
+	case "down", "j":
+		if m.markCursor < len(markOptions)-1 {
+			m.markCursor++
+		}
+	case "left", "esc":
+		m.mode = modeList
+	case "enter":
+		if len(m.sessions) > 0 {
+			_ = session.SetMark(m.sessions[m.focused], markOptions[m.markCursor].key)
+		}
+		m.mode = modeList
 	}
 	return m, nil
 }

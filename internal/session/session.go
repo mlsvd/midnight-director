@@ -10,6 +10,10 @@ import (
 const StaleThreshold = 5 * time.Second
 const SummaryDebounce = 4 * time.Second
 
+// MarkOption is the tmux user option a session's mark is persisted under, so
+// it survives a midnight-director restart (the process itself keeps no state).
+const MarkOption = "@md-mark"
+
 type State int
 
 const (
@@ -45,6 +49,7 @@ type Session struct {
 	IsSummarizing    bool   // true while AI is processing
 	StableStateSince time.Time // when current done/waiting state was first entered
 	Note           string
+	Mark           string // persisted via tmux user option, see MarkOption
 	IsClaude       bool
 	LastOutput     string
 	LastChangeTime time.Time
@@ -132,6 +137,28 @@ func Refresh(s *Session) error {
 		s.IsSummarizing = false
 	}
 
+	return nil
+}
+
+// LoadMark hydrates s.Mark from the tmux session option, so a mark set in a
+// previous midnight-director run is restored on rediscovery.
+func LoadMark(s *Session) {
+	if v, err := tmux.GetSessionOption(s.Name, MarkOption); err == nil {
+		s.Mark = v
+	}
+}
+
+// SetMark persists mark to the session's tmux option and updates s.Mark.
+// Passing "" clears the mark.
+func SetMark(s *Session, mark string) error {
+	if mark == "" {
+		if err := tmux.UnsetSessionOption(s.Name, MarkOption); err != nil {
+			return err
+		}
+	} else if err := tmux.SetSessionOption(s.Name, MarkOption, mark); err != nil {
+		return err
+	}
+	s.Mark = mark
 	return nil
 }
 

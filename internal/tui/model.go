@@ -26,6 +26,7 @@ const (
 	modeKillConfirm
 	modeRenameInput
 	modeAnnotateInput
+	modeMarkSelect
 )
 
 type menuItem int
@@ -37,18 +38,33 @@ const (
 	menuKill
 	menuSummarize
 	menuPrompt
+	menuMark
+	menuResetMark
 )
 
-var menuItems = []struct {
+type menuEntry struct {
 	item  menuItem
 	label string
-}{
-	{menuConnect, "connect"},
-	{menuCommand, "command"},
-	{menuPrompt, "use prompt"},
-	{menuGetScreen, "get screen"},
-	{menuSummarize, "summarize"},
-	{menuKill, "kill"},
+}
+
+// menuEntries returns the dialog actions for the focused session. "mark" and
+// "reset mark" are mutually exclusive depending on whether the session is
+// already marked.
+func (m Model) menuEntries() []menuEntry {
+	entries := []menuEntry{
+		{menuConnect, "connect"},
+		{menuCommand, "command"},
+		{menuPrompt, "use prompt"},
+		{menuGetScreen, "get screen"},
+		{menuSummarize, "summarize"},
+	}
+	if len(m.sessions) > 0 && m.sessions[m.focused].Mark != "" {
+		entries = append(entries, menuEntry{menuResetMark, "reset mark"})
+	} else {
+		entries = append(entries, menuEntry{menuMark, "mark"})
+	}
+	entries = append(entries, menuEntry{menuKill, "kill"})
+	return entries
 }
 
 type tickMsg time.Time
@@ -63,6 +79,7 @@ type Model struct {
 	focused       int
 	mode          viewMode
 	menuCursor    int
+	markCursor    int
 	input         textinput.Model
 	viewport      viewport.Model
 	spinner       spinner.Model

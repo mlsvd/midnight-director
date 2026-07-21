@@ -53,6 +53,9 @@ func (m Model) buildListContent() string {
 				case modeMenu:
 					b.WriteString(m.viewMenu())
 					b.WriteString("\n")
+				case modeMarkSelect:
+					b.WriteString(m.viewMarkSelect())
+					b.WriteString("\n")
 				case modeQuickInput:
 					b.WriteString(m.renderInlineInput("  "))
 					b.WriteString("\n")
@@ -153,9 +156,12 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 		icon = m.theme.ClaudeIcon.Render("◆ ")
 	}
 
-	// name
+	// name — a mark renders as a colored background pill instead of the
+	// normal/focused text style
 	var nameStyled string
-	if focused {
+	if style, ok := markStyle(s.Mark); ok {
+		nameStyled = style.Render(s.Name)
+	} else if focused {
 		nameStyled = m.theme.SessionNameFocused.Render(s.Name)
 	} else {
 		nameStyled = m.theme.SessionName.Render(s.Name)
@@ -242,11 +248,25 @@ func (m Model) renderInlineInput(prefix string) string {
 
 func (m Model) viewMenu() string {
 	var rows []string
-	for i, item := range menuItems {
+	for i, item := range m.menuEntries() {
 		if i == m.menuCursor {
 			rows = append(rows, m.theme.MenuSelected.Render(item.label))
 		} else {
 			rows = append(rows, m.theme.MenuNormal.Render(item.label))
+		}
+	}
+	return lipgloss.NewStyle().MarginLeft(2).Render(m.theme.Menu.Render(strings.Join(rows, "\n")))
+}
+
+func (m Model) viewMarkSelect() string {
+	var rows []string
+	for i, opt := range markOptions {
+		style, _ := markStyle(opt.key)
+		pill := style.Render(opt.label)
+		if i == m.markCursor {
+			rows = append(rows, m.theme.MenuSelected.Render(pill))
+		} else {
+			rows = append(rows, m.theme.MenuNormal.Render(pill))
 		}
 	}
 	return lipgloss.NewStyle().MarginLeft(2).Render(m.theme.Menu.Render(strings.Join(rows, "\n")))

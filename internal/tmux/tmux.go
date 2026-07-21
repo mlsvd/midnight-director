@@ -47,6 +47,26 @@ func SendKeys(session, keys string) error {
 	return exec.Command("tmux", "send-keys", "-t", session, keys, "Enter").Run()
 }
 
+// SetSessionOption sets a tmux user option scoped to session, so it survives
+// a midnight-director restart even though the process itself is stateless.
+func SetSessionOption(session, option, value string) error {
+	return exec.Command("tmux", "set-option", "-t", session, option, value).Run()
+}
+
+// UnsetSessionOption removes a previously set session-scoped user option.
+func UnsetSessionOption(session, option string) error {
+	return exec.Command("tmux", "set-option", "-u", "-t", session, option).Run()
+}
+
+// GetSessionOption reads a session-scoped user option, returning "" if unset.
+func GetSessionOption(session, option string) (string, error) {
+	out, err := exec.Command("tmux", "show-options", "-t", session, "-v", option).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func CapturePaneRaw(session string) (string, error) {
 	out, err := exec.Command("tmux", "capture-pane", "-t", session, "-p", "-e").Output()
 	if err != nil {
