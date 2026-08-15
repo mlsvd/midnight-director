@@ -46,6 +46,7 @@ func (m Model) viewList() string {
 
 	if len(m.list.Items()) == 0 {
 		path := "~/.config/midnight-director/prompts.json"
+		dir := "~/.config/midnight-director/prompts/"
 		body := m.styles.label.Render("No prompts yet. Create "+path+":") +
 			"\n\n" +
 			m.styles.preview.Render(
@@ -57,7 +58,9 @@ func (m Model) viewList() string {
 					`]`,
 			) +
 			"\n\n" +
-			m.styles.label.Render("Placeholders inside \"text\" (filled interactively when prompt is selected):") +
+			m.styles.label.Render("...or drop .txt/.md files in "+dir+" — one prompt per file, filename is the name.") +
+			"\n\n" +
+			m.styles.label.Render("Placeholders inside prompt text (filled interactively when prompt is selected):") +
 			"\n" +
 			m.styles.hint.Render("  {{placeholder}}    prompted to enter a value before sending")
 		return body + "\n\n" + hint

@@ -34,7 +34,7 @@ func main() {
 }
 
 func runPicker(session string, darkMode bool) {
-	ps, err := prompts.Load(prompts.DefaultPath())
+	ps, err := prompts.LoadAll(prompts.DefaultPath(), prompts.DefaultFilesDir())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading prompts: %v\n", err)
 		os.Exit(1)

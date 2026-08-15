@@ -319,7 +319,7 @@ func (m Model) viewCommandBar() string {
 	h.Width = m.width - 6
 	h.ShowAll = true
 
-	promptsPath := "~/.config/midnight-director/prompts.json"
+	promptsPath := "~/.config/midnight-director/{prompts.json,prompts/*.{txt,md}}"
 	tipsText := "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
 
 	// Truncate to one line so the bar height stays predictable on narrow terminals.
