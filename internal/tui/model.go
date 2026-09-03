@@ -68,6 +68,7 @@ func (m Model) menuEntries() []menuEntry {
 }
 
 type tickMsg time.Time
+type screenTickMsg time.Time
 type pollMsg struct{ idx int }
 type screenCaptureMsg struct {
 	idx     int
@@ -75,25 +76,26 @@ type screenCaptureMsg struct {
 }
 
 type Model struct {
-	sessions      []*session.Session
-	focused       int
-	mode          viewMode
-	menuCursor    int
-	markCursor    int
-	input         textinput.Model
-	viewport      viewport.Model
-	spinner       spinner.Model
-	help          help.Model
-	screenText    string
-	width         int
-	height        int
-	darkMode       bool
-	theme          Theme
-	autoSummarize  bool
-	aiCmd          string
-	mySession      string // tmux session midnight-director itself runs in
-	renamedSession string // briefly set after rename to drive the moved indicator
-	err            error
+	sessions         []*session.Session
+	focused          int
+	mode             viewMode
+	menuCursor       int
+	markCursor       int
+	input            textinput.Model
+	viewport         viewport.Model
+	spinner          spinner.Model
+	help             help.Model
+	screenText       string
+	width            int
+	height           int
+	darkMode         bool
+	theme            Theme
+	autoSummarize    bool
+	aiCmd            string
+	mySession        string // tmux session midnight-director itself runs in
+	renamedSession   string // briefly set after rename to drive the moved indicator
+	pickerFromScreen bool   // true if the open picker was launched from the screen overlay, not the list/menu — see pickerSentMsg handling
+	err              error
 }
 
 func New() Model {

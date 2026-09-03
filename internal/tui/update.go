@@ -51,6 +51,15 @@ func tickEvery(d time.Duration) tea.Cmd {
 	})
 }
 
+// screenRefreshInterval is decoupled from tickEvery so the screen-overlay preview can refresh faster without also multiplying the list's per-session poll.
+const screenRefreshInterval = 200 * time.Millisecond
+
+func screenTickEvery() tea.Cmd {
+	return tea.Every(screenRefreshInterval, func(t time.Time) tea.Msg {
+		return screenTickMsg(t)
+	})
+}
+
 func pollSession(idx int, s *session.Session) tea.Cmd {
 	return func() tea.Msg {
 		_ = session.Refresh(s)
@@ -60,7 +69,7 @@ func pollSession(idx int, s *session.Session) tea.Cmd {
 
 func captureScreen(idx int, name string) tea.Cmd {
 	return func() tea.Msg {
-		content, err := tmux.CapturePanePlain(name)
+		content, err := tmux.CapturePaneRaw(name)
 		if err != nil {
 			content = "(error capturing screen)"
 		}
@@ -80,7 +89,7 @@ func summarizeSession(idx int, paneText, aiCmd string) tea.Cmd {
 
 func refreshScreen(name string) tea.Cmd {
 	return func() tea.Msg {
-		content, err := tmux.CapturePanePlain(name)
+		content, err := tmux.CapturePaneRaw(name)
 		if err != nil {
 			return nil
 		}
@@ -243,19 +252,22 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 	case screenCaptureMsg:
 		m.screenText = msg.content
 		m.mode = modeScreenView
-		return m, nil
+		return m, screenTickEvery()
 
 	case liveScreenMsg:
 		m.screenText = string(msg)
 		return m, nil
 
+	case screenTickMsg:
+		if (m.mode != modeScreenView && m.mode != modeScreenInput) || len(m.sessions) == 0 {
+			return m, nil // overlay closed since this was scheduled — let the ticker die
+		}
+		return m, tea.Batch(refreshScreen(m.sessions[m.focused].Name), screenTickEvery())
+
 	case tickMsg:
 		var cmds []tea.Cmd
 		for i, s := range m.sessions {
 			cmds = append(cmds, pollSession(i, s))
-		}
-		if (m.mode == modeScreenView || m.mode == modeScreenInput) && len(m.sessions) > 0 {
-			cmds = append(cmds, refreshScreen(m.sessions[m.focused].Name))
 		}
 		cmds = append(cmds, tickEvery(5*time.Second))
 		cmds = append(cmds, tea.SetWindowTitle(m.windowTitle()))
@@ -270,6 +282,15 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 
 	case pickerSentMsg:
+		fromScreen := m.pickerFromScreen
+		m.pickerFromScreen = false
+		if msg == "" {
+			return m, nil // picker was cancelled — nothing sent
+		}
+		if fromScreen {
+			m.mode = modeScreenView
+			return m, refreshScreen(string(msg))
+		}
 		return m, connectToSession(string(msg), m.backHint())
 
 	case tea.KeyMsg:
@@ -560,11 +581,12 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.mode = modeList
 
 		case modeScreenInput:
+			m.mode = modeScreenView
 			if len(m.sessions) > 0 {
 				s := m.sessions[m.focused]
 				_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
+				return m, refreshScreen(s.Name)
 			}
-			m.mode = modeList
 		}
 		return m, nil
 	}
@@ -594,6 +616,11 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.input.Placeholder = "send to " + s.Name + "…"
 			m.input.Focus()
 			return m, textinput.Blink
+		}
+	case "p":
+		if len(m.sessions) > 0 {
+			m.pickerFromScreen = true // stay on the overlay after sending instead of attaching — see pickerSentMsg
+			return m, openPicker(m.sessions[m.focused].Name, m.darkMode)
 		}
 	}
 	return m, nil
@@ -762,7 +789,7 @@ func openPicker(sessionName string, darkMode bool) tea.Cmd {
 			if readErr == nil && len(data) > 0 {
 				return pickerSentMsg(strings.TrimSpace(string(data)))
 			}
-			return nil
+			return pickerSentMsg("") // cancelled — still deliver a msg so pickerFromScreen gets reset
 		},
 	)
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/malisev/midnight-director/internal/session"
 )
 
@@ -284,34 +285,62 @@ func (m Model) viewScreen() string {
 		innerWidth = 1
 	}
 
+	// ansi.Truncate avoids cutting mid-escape-sequence, since screenText carries SGR color codes.
 	lines := strings.Split(m.screenText, "\n")
 	for i, line := range lines {
-		runes := []rune(line)
-		if len(runes) > innerWidth {
-			lines[i] = string(runes[:innerWidth])
-		}
+		lines[i] = ansi.Truncate(line, innerWidth, "")
 	}
 	if len(lines) > contentHeight {
 		lines = lines[len(lines)-contentHeight:]
 	}
 
+	borderColor := m.theme.Shortcut.GetForeground()
+	hasTitle := len(m.sessions) > 0
 	screenBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(m.theme.Shortcut.GetForeground()).
+		BorderTop(!hasTitle).
+		BorderForeground(borderColor).
 		Width(m.width - 2).
 		Render(strings.Join(lines, "\n"))
 
+	if hasTitle {
+		b.WriteString(m.renderScreenTitleBar(m.sessions[m.focused].Name, m.width-2, borderColor))
+		b.WriteString("\n")
+	}
 	b.WriteString(screenBox)
 	b.WriteString("\n")
 
 	if m.mode == modeScreenInput {
 		b.WriteString(m.renderInlineInput("  "))
 	} else {
-		b.WriteString(m.theme.Shortcut.Render("  [i] send input   [esc] close"))
+		b.WriteString(m.theme.Shortcut.Render("  [i] send input   [p] use prompt   [esc] close"))
 	}
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+// renderScreenTitleBar draws a rounded top border with the session name embedded, e.g. "╭─ weather ──╮"; borderWidth must match the box's own Width(...) so corners line up.
+func (m Model) renderScreenTitleBar(name string, borderWidth int, borderColor lipgloss.TerminalColor) string {
+	border := lipgloss.RoundedBorder()
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+
+	if borderWidth < 4 {
+		return borderStyle.Render(border.TopLeft + strings.Repeat(border.Top, max(borderWidth-2, 0)) + border.TopRight)
+	}
+
+	const leftGap = 1
+	avail := borderWidth - leftGap - 1 // reserve at least 1 dash on the right
+	label := " " + name + " "
+	if lipgloss.Width(label) > avail {
+		inner := max(avail-2, 1) // minus the two surrounding spaces
+		label = " " + ansi.Truncate(name, inner, "…") + " "
+	}
+	rightGap := max(borderWidth-leftGap-lipgloss.Width(label), 0)
+
+	return borderStyle.Render(border.TopLeft+strings.Repeat(border.Top, leftGap)) +
+		m.theme.SessionNameFocused.Render(label) +
+		borderStyle.Render(strings.Repeat(border.Top, rightGap)+border.TopRight)
 }
 
 func (m Model) viewCommandBar() string {

@@ -92,6 +92,16 @@ Prompts are loaded from `~/.config/midnight-director/prompts.json`:
 ]
 ```
 
+You can also drop standalone prompts in `~/.config/midnight-director/prompts/` as plain `.txt` or `.md` files — one prompt per file. The filename (without extension) becomes the prompt's name, and the file's contents become its text, placeholders included:
+
+```
+~/.config/midnight-director/prompts/
+  review output.txt
+  validate and fix.md
+```
+
+Prompts from both sources are merged and shown together in the picker.
+
 ### Placeholders
 
 Placeholders inside `"text"` are filled interactively when a prompt is selected:

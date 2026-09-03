@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 func ListSessions() ([]string, error) {
@@ -43,8 +44,22 @@ func RenameSession(old, newName string) error {
 	return exec.Command("tmux", "rename-session", "-t", old, newName).Run()
 }
 
+var sendKeysSeq int64
+
+// SendKeys pastes text via tmux's paste buffer (-r/-p) rather than send-keys directly, so embedded newlines don't fire as premature Enter submissions, then sends a real Enter to submit.
 func SendKeys(session, keys string) error {
-	return exec.Command("tmux", "send-keys", "-t", session, keys, "Enter").Run()
+	if keys == "" {
+		return exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
+	}
+
+	buf := fmt.Sprintf("md-%d-%d", os.Getpid(), atomic.AddInt64(&sendKeysSeq, 1))
+	if err := exec.Command("tmux", "set-buffer", "-b", buf, "--", keys).Run(); err != nil {
+		return err
+	}
+	if err := exec.Command("tmux", "paste-buffer", "-b", buf, "-d", "-r", "-p", "-t", session).Run(); err != nil {
+		return err
+	}
+	return exec.Command("tmux", "send-keys", "-t", session, "Enter").Run()
 }
 
 // SetSessionOption sets a tmux user option scoped to session, so it survives
