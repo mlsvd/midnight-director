@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/malisev/midnight-director/internal/ai"
 	"github.com/malisev/midnight-director/internal/session"
 	"github.com/malisev/midnight-director/internal/tmux"
@@ -22,6 +23,7 @@ type sessionsDiscoveredMsg []*session.Session
 type clearRenamedMsg struct{}
 type sessionCreatedMsg *session.Session
 type liveScreenMsg string
+type screenReattachMsg string
 type summaryResultMsg struct {
 	idx  int
 	text string
@@ -94,6 +96,39 @@ func refreshScreen(name string) tea.Cmd {
 			return nil
 		}
 		return liveScreenMsg(content)
+	}
+}
+
+func (m Model) screenViewportSize() (width, height int) {
+	height = m.height - 4
+	if height < 1 {
+		height = 1
+	}
+	width = m.width - 2
+	if width < 1 {
+		width = 1
+	}
+	return width, height
+}
+
+func (m *Model) setScreenContent(content string) {
+	w, h := m.screenViewportSize()
+	m.screenViewport.Width = w
+	m.screenViewport.Height = h
+
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = ansi.Truncate(line, w, "")
+	}
+
+	for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	atBottom := m.screenViewport.AtBottom()
+	m.screenViewport.SetContent(strings.Join(lines, "\n"))
+	if atBottom {
+		m.screenViewport.GotoBottom()
 	}
 }
 
@@ -250,12 +285,18 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 
 	case screenCaptureMsg:
-		m.screenText = msg.content
+		m.setScreenContent(msg.content)
 		m.mode = modeScreenView
 		return m, screenTickEvery()
 
 	case liveScreenMsg:
-		m.screenText = string(msg)
+		m.setScreenContent(string(msg))
+		return m, nil
+
+	case screenReattachMsg:
+		if len(m.sessions) > 0 {
+			return m, refreshScreen(string(msg))
+		}
 		return m, nil
 
 	case screenTickMsg:
@@ -292,6 +333,14 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 			return m, refreshScreen(string(msg))
 		}
 		return m, connectToSession(string(msg), m.backHint())
+
+	case tea.MouseMsg:
+		if m.mode == modeScreenView {
+			var cmd tea.Cmd
+			m.screenViewport, cmd = m.screenViewport.Update(msg)
+			return m, cmd
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -608,6 +657,7 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", " ":
 		m.mode = modeList
+		return m, nil
 	case "i", "enter":
 		if len(m.sessions) > 0 {
 			s := m.sessions[m.focused]
@@ -617,13 +667,30 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.input.Focus()
 			return m, textinput.Blink
 		}
+		return m, nil
 	case "p":
 		if len(m.sessions) > 0 {
 			m.pickerFromScreen = true // stay on the overlay after sending instead of attaching — see pickerSentMsg
 			return m, openPicker(m.sessions[m.focused].Name, m.darkMode)
 		}
+		return m, nil
+	case "c":
+		if len(m.sessions) > 0 {
+			return m, connectFromScreen(m.sessions[m.focused].Name, m.backHint())
+		}
+		return m, nil
+	case "G", "end":
+		m.screenViewport.GotoBottom()
+		return m, nil
+	case "g", "home":
+		m.screenViewport.GotoTop()
+		return m, nil
 	}
-	return m, nil
+
+	// anything else (up/down/k/j/pgup/pgdown/ctrl+u/ctrl+d, and " " when not otherwise bound) scrolls the pane history
+	var cmd tea.Cmd
+	m.screenViewport, cmd = m.screenViewport.Update(msg)
+	return m, cmd
 }
 
 func (m Model) handleKillKey(msg tea.KeyMsg) (Model, tea.Cmd) {
@@ -756,7 +823,8 @@ func (m Model) backHint() string {
 	return "M-b · back to midnight-director"
 }
 
-func connectToSession(name, backHint string) tea.Cmd {
+// attachSession blocks the TUI's event loop and hands the terminal to a real tmux client until the user detaches, then reports completion via onDone.
+func attachSession(name, backHint string, onDone func() tea.Msg) tea.Cmd {
 	if backHint != "" {
 		_ = exec.Command("tmux", "set-hook", "-t", name, "client-attached",
 			fmt.Sprintf("display-message '%s'", backHint)).Run()
@@ -767,9 +835,18 @@ func connectToSession(name, backHint string) tea.Cmd {
 			if backHint != "" {
 				_ = exec.Command("tmux", "set-hook", "-u", "-t", name, "client-attached").Run()
 			}
-			return nil
+			return onDone()
 		},
 	)
+}
+
+func connectToSession(name, backHint string) tea.Cmd {
+	return attachSession(name, backHint, func() tea.Msg { return nil })
+}
+
+// connectFromScreen attaches directly from the preview overlay; unlike connectToSession it returns to the (refreshed) overlay instead of the session list once the user detaches.
+func connectFromScreen(name, backHint string) tea.Cmd {
+	return attachSession(name, backHint, func() tea.Msg { return screenReattachMsg(name) })
 }
 
 type pickerSentMsg string

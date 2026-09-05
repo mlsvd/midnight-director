@@ -276,24 +276,6 @@ func (m Model) viewMarkSelect() string {
 func (m Model) viewScreen() string {
 	var b strings.Builder
 
-	contentHeight := m.height - 4
-	if contentHeight < 1 {
-		contentHeight = 1
-	}
-	innerWidth := m.width - 4
-	if innerWidth < 1 {
-		innerWidth = 1
-	}
-
-	// ansi.Truncate avoids cutting mid-escape-sequence, since screenText carries SGR color codes.
-	lines := strings.Split(m.screenText, "\n")
-	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, innerWidth, "")
-	}
-	if len(lines) > contentHeight {
-		lines = lines[len(lines)-contentHeight:]
-	}
-
 	borderColor := m.theme.Shortcut.GetForeground()
 	hasTitle := len(m.sessions) > 0
 	screenBox := lipgloss.NewStyle().
@@ -301,7 +283,7 @@ func (m Model) viewScreen() string {
 		BorderTop(!hasTitle).
 		BorderForeground(borderColor).
 		Width(m.width - 2).
-		Render(strings.Join(lines, "\n"))
+		Render(m.screenViewport.View())
 
 	if hasTitle {
 		b.WriteString(m.renderScreenTitleBar(m.sessions[m.focused].Name, m.width-2, borderColor))
@@ -313,7 +295,11 @@ func (m Model) viewScreen() string {
 	if m.mode == modeScreenInput {
 		b.WriteString(m.renderInlineInput("  "))
 	} else {
-		b.WriteString(m.theme.Shortcut.Render("  [i] send input   [p] use prompt   [esc] close"))
+		hint := "  [i] send  [p] prompt  [c] connect  [↑/↓] scroll  [G] bottom  [esc] close"
+		if !m.screenViewport.AtBottom() {
+			hint += "  " + m.theme.Hint.Render("(scrolled — press G to resume live)")
+		}
+		b.WriteString(m.theme.Shortcut.Render(hint))
 	}
 	b.WriteString("\n")
 

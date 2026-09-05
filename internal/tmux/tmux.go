@@ -82,8 +82,10 @@ func GetSessionOption(session, option string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+const screenHistoryLines = 2000
+
 func CapturePaneRaw(session string) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-t", session, "-p", "-e").Output()
+	out, err := exec.Command("tmux", "capture-pane", "-t", session, "-p", "-e", "-S", fmt.Sprintf("-%d", screenHistoryLines)).Output()
 	if err != nil {
 		return "", err
 	}

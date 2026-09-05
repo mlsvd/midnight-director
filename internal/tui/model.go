@@ -85,7 +85,7 @@ type Model struct {
 	viewport         viewport.Model
 	spinner          spinner.Model
 	help             help.Model
-	screenText       string
+	screenViewport   viewport.Model
 	width            int
 	height           int
 	darkMode         bool
