@@ -168,6 +168,11 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 		nameStyled = m.theme.SessionName.Render(s.Name)
 	}
 
+	namePrefix := bar + icon + nameStyled
+	if pad := m.nameColumnWidth() - lipgloss.Width(namePrefix); pad > 0 {
+		namePrefix += strings.Repeat(" ", pad)
+	}
+
 	// status badge
 	var badge string
 	switch s.State {
@@ -180,20 +185,55 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 	case session.StateWaiting:
 		badge = m.theme.Waiting.Render("waiting")
 	}
+	if pad := m.badgeColumnWidth() - lipgloss.Width(badge); pad > 0 {
+		badge += strings.Repeat(" ", pad)
+	}
 
-	fixed := lipgloss.Width(bar) + lipgloss.Width(icon) + lipgloss.Width(nameStyled) +
-		2 + lipgloss.Width(badge) + 2
+	fixed := lipgloss.Width(namePrefix) + 2 + lipgloss.Width(badge) + 2
 	detailAvail := rowWidth - fixed
 	if detailAvail < 0 {
 		detailAvail = 0
 	}
 	detail := m.renderDetail(s, detailAvail)
 
-	row := bar + icon + nameStyled + "  " + badge + "  " + detail
+	row := namePrefix + "  " + badge + "  " + detail
 	if focused {
 		row = m.theme.Focused.Width(rowWidth).Render(row)
 	}
 	return row
+}
+
+func (m Model) nameColumnWidth() int {
+	maxW := (m.width - 2) / 2
+	if maxW < 10 {
+		maxW = 10
+	}
+	w := 0
+	for _, s := range m.sessions {
+		depth := strings.Count(s.Name, "/")
+		prefix := 2*depth + 2 + 2 + lipgloss.Width(s.Name) // bar + icon + name
+		if prefix > w {
+			w = prefix
+		}
+	}
+	if w > maxW {
+		w = maxW
+	}
+	return w
+}
+
+func (m Model) badgeColumnWidth() int {
+	w := lipgloss.Width("idle")
+	if x := lipgloss.Width(m.spinner.View() + " running"); x > w {
+		w = x
+	}
+	if x := lipgloss.Width("✓ done"); x > w {
+		w = x
+	}
+	if x := lipgloss.Width("waiting"); x > w {
+		w = x
+	}
+	return w
 }
 
 func (m Model) renderNoteLine(s *session.Session) string {
