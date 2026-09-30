@@ -241,6 +241,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.viewport = viewport.New(m.width-2, vpHeight)
 		m.help.Width = m.width - 6
+		m.screenInput.SetWidth(m.width - 4)
 		return m, nil
 
 	case tea.ResumeMsg:
@@ -359,8 +360,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleMenuKey(msg)
 	case modeNewSession:
 		return m.handleNewSessionKey(msg)
-	case modeCommandInput, modeQuickInput, modeScreenInput:
+	case modeCommandInput, modeQuickInput:
 		return m.handleInputKey(msg)
+	case modeScreenInput:
+		return m.handleScreenInputKey(msg)
 	case modeScreenView:
 		return m.handleScreenKey(msg)
 	case modeKillConfirm:
@@ -628,14 +631,6 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
 			}
 			m.mode = modeList
-
-		case modeScreenInput:
-			m.mode = modeScreenView
-			if len(m.sessions) > 0 {
-				s := m.sessions[m.focused]
-				_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
-				return m, refreshScreen(s.Name)
-			}
 		}
 		return m, nil
 	}
@@ -662,10 +657,10 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if len(m.sessions) > 0 {
 			s := m.sessions[m.focused]
 			m.mode = modeScreenInput
-			m.input.SetValue("")
-			m.input.Placeholder = "send to " + s.Name + "…"
-			m.input.Focus()
-			return m, textinput.Blink
+			m.screenInput.Reset()
+			m.screenInput.Placeholder = "send to " + s.Name + "… (ctrl+j/alt+enter for a newline)"
+			m.screenInput.SetWidth(m.width - 4)
+			return m, m.screenInput.Focus()
 		}
 		return m, nil
 	case "p":
@@ -690,6 +685,35 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// anything else (up/down/k/j/pgup/pgdown/ctrl+u/ctrl+d, and " " when not otherwise bound) scrolls the pane history
 	var cmd tea.Cmd
 	m.screenViewport, cmd = m.screenViewport.Update(msg)
+	return m, cmd
+}
+
+// handleScreenInputKey drives the multi-line composer opened from the preview overlay. "enter"
+// (and its "ctrl+m" alias) sends, since that's the convention every other input in this app
+// already uses; ctrl+j and alt+enter are bound as the textarea's own InsertNewline keys (see
+// model.go) so typing a real newline needs a deliberate combo instead of colliding with send —
+// they fall through to the m.screenInput.Update(msg) below rather than being handled here.
+func (m Model) handleScreenInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = modeScreenView
+		m.screenInput.Blur()
+		return m, nil
+
+	case "enter", "ctrl+m":
+		val := strings.TrimSpace(m.screenInput.Value())
+		m.screenInput.Blur()
+		m.mode = modeScreenView
+		if len(m.sessions) > 0 {
+			s := m.sessions[m.focused]
+			_ = tmux.SendKeys(s.Name, resolveFromRefs(val, s.Name))
+			return m, refreshScreen(s.Name)
+		}
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.screenInput, cmd = m.screenInput.Update(msg)
 	return m, cmd
 }
 

@@ -333,7 +333,9 @@ func (m Model) viewScreen() string {
 	b.WriteString("\n")
 
 	if m.mode == modeScreenInput {
-		b.WriteString(m.renderInlineInput("  "))
+		b.WriteString(m.screenInput.View())
+		b.WriteString("\n")
+		b.WriteString(m.theme.Shortcut.Render("  [enter] send   [ctrl+j/alt+enter] newline   [esc] cancel"))
 	} else {
 		hint := "  [i] send  [p] prompt  [c] connect  [↑/↓] scroll  [G] bottom  [esc] close"
 		if !m.screenViewport.AtBottom() {
