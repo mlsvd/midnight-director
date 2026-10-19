@@ -321,12 +321,14 @@ func (m Model) viewScreen() string {
 	screenBox := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderTop(!hasTitle).
+		BorderLeft(false).
+		BorderRight(false).
 		BorderForeground(borderColor).
-		Width(m.width - 2).
+		Width(m.width).
 		Render(m.screenViewport.View())
 
 	if hasTitle {
-		b.WriteString(m.renderScreenTitleBar(m.sessions[m.focused].Name, m.width-2, borderColor))
+		b.WriteString(m.renderScreenTitleBar(m.sessions[m.focused].Name, m.width, borderColor))
 		b.WriteString("\n")
 	}
 	b.WriteString(screenBox)
@@ -348,27 +350,24 @@ func (m Model) viewScreen() string {
 	return b.String()
 }
 
-// renderScreenTitleBar draws a rounded top border with the session name embedded, e.g. "╭─ weather ──╮"; borderWidth must match the box's own Width(...) so corners line up.
+// renderScreenTitleBar draws a plain top border line with the session name embedded, e.g.
+// "── weather ──────"; no corner glyphs since the box below has no left/right border to
+// connect them to. borderWidth must match the box's own Width(...) so the lines line up.
 func (m Model) renderScreenTitleBar(name string, borderWidth int, borderColor lipgloss.TerminalColor) string {
 	border := lipgloss.RoundedBorder()
 	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
 
-	if borderWidth < 4 {
-		return borderStyle.Render(border.TopLeft + strings.Repeat(border.Top, max(borderWidth-2, 0)) + border.TopRight)
-	}
-
 	const leftGap = 1
-	avail := borderWidth - leftGap - 1 // reserve at least 1 dash on the right
 	label := " " + name + " "
-	if lipgloss.Width(label) > avail {
-		inner := max(avail-2, 1) // minus the two surrounding spaces
+	if lipgloss.Width(label) > borderWidth-leftGap {
+		inner := max(borderWidth-leftGap-2, 1) // minus the two surrounding spaces
 		label = " " + ansi.Truncate(name, inner, "…") + " "
 	}
 	rightGap := max(borderWidth-leftGap-lipgloss.Width(label), 0)
 
-	return borderStyle.Render(border.TopLeft+strings.Repeat(border.Top, leftGap)) +
+	return borderStyle.Render(strings.Repeat(border.Top, leftGap)) +
 		m.theme.SessionNameFocused.Render(label) +
-		borderStyle.Render(strings.Repeat(border.Top, rightGap)+border.TopRight)
+		borderStyle.Render(strings.Repeat(border.Top, rightGap))
 }
 
 func (m Model) viewCommandBar() string {

@@ -38,21 +38,22 @@ func (s State) String() string {
 }
 
 type Session struct {
-	Name           string
-	State          State
-	PrevState      State
-	Command        string
-	Title          string // set by the process via OSC 2 escape sequence, read from pane_title
-	Hint           string
-	StreamChunk    string
-	Summary          string // AI-generated one-sentence summary of last completed run
-	IsSummarizing    bool   // true while AI is processing
+	ID               string // tmux session_id (e.g. "$3") — stable across renames, see tui.reconcileSessions
+	Name             string
+	State            State
+	PrevState        State
+	Command          string
+	Title            string // set by the process via OSC 2 escape sequence, read from pane_title
+	Hint             string
+	StreamChunk      string
+	Summary          string    // AI-generated one-sentence summary of last completed run
+	IsSummarizing    bool      // true while AI is processing
 	StableStateSince time.Time // when current done/waiting state was first entered
-	Note           string
-	Mark           string // persisted via tmux user option, see MarkOption
-	IsClaude       bool
-	LastOutput     string
-	LastChangeTime time.Time
+	Note             string
+	Mark             string // persisted via tmux user option, see MarkOption
+	IsClaude         bool
+	LastOutput       string
+	LastChangeTime   time.Time
 }
 
 var shellCommands = map[string]bool{
@@ -101,7 +102,6 @@ func Refresh(s *Session) error {
 		s.LastChangeTime = time.Now()
 		s.StreamChunk = lastNonEmpty(tailLines(pane, 3))
 	}
-
 
 	// check if foreground process is blocked on terminal input
 	shellPID, pidErr := tmux.PanePID(s.Name)

@@ -24,6 +24,7 @@ type clearRenamedMsg struct{}
 type sessionCreatedMsg *session.Session
 type liveScreenMsg string
 type screenReattachMsg string
+type sessionRefsMsg []tmux.SessionRef
 type summaryResultMsg struct {
 	idx  int
 	text string
@@ -32,18 +33,31 @@ type errMsg error
 
 func discoverSessions() tea.Cmd {
 	return func() tea.Msg {
-		names, err := tmux.ListSessions()
+		refs, err := tmux.ListSessionsWithIDs()
 		if err != nil {
 			return errMsg(err)
 		}
 		var sessions []*session.Session
-		for _, n := range names {
-			s := &session.Session{Name: n}
+		for _, ref := range refs {
+			s := &session.Session{ID: ref.ID, Name: ref.Name}
 			_ = session.Refresh(s)
 			session.LoadMark(s)
 			sessions = append(sessions, s)
 		}
 		return sessionsDiscoveredMsg(sessions)
+	}
+}
+
+// listSessionRefs polls tmux directly (bypassing this instance's in-memory session list) so
+// reconcileSessions can notice sessions created, killed, or renamed by another midnight-director
+// instance — or by a bare `tmux` command — since the last tick.
+func listSessionRefs() tea.Cmd {
+	return func() tea.Msg {
+		refs, err := tmux.ListSessionsWithIDs()
+		if err != nil {
+			return nil // a transient tmux hiccup here shouldn't surface as an error popup — just try again next tick
+		}
+		return sessionRefsMsg(refs)
 	}
 }
 
@@ -104,7 +118,7 @@ func (m Model) screenViewportSize() (width, height int) {
 	if height < 1 {
 		height = 1
 	}
-	width = m.width - 2
+	width = m.width
 	if width < 1 {
 		width = 1
 	}
@@ -185,6 +199,77 @@ func indexByName(sessions []*session.Session, name string) int {
 	return len(sessions) - 1
 }
 
+func indexOfSession(sessions []*session.Session, target *session.Session) int {
+	for i, s := range sessions {
+		if s == target {
+			return i
+		}
+	}
+	return -1
+}
+
+// reconcileSessions merges a fresh tmux session list into m.sessions, so sessions created,
+// killed, or renamed by another midnight-director instance (or a bare tmux command) show up
+// here without a restart. Matching is by tmux's stable session_id first — that's what lets a
+// rename be recognized as a rename (preserving Note/Summary/Mark/in-flight state) rather than
+// read as "killed + new session created". Falls back to matching by name for sessions
+// discovered before IDs were tracked. Returns true if any session was renamed, so the caller
+// can trigger the same "moved" flash a local rename gets.
+func (m *Model) reconcileSessions(refs []tmux.SessionRef) bool {
+	byID := make(map[string]*session.Session, len(m.sessions))
+	byName := make(map[string]*session.Session, len(m.sessions))
+	for _, s := range m.sessions {
+		if s.ID != "" {
+			byID[s.ID] = s
+		}
+		byName[s.Name] = s
+	}
+
+	var focusedSession *session.Session
+	if m.focused < len(m.sessions) {
+		focusedSession = m.sessions[m.focused]
+	}
+
+	renamed := false
+	seen := make(map[*session.Session]bool, len(refs))
+	merged := make([]*session.Session, 0, len(refs))
+	for _, ref := range refs {
+		if s, ok := byID[ref.ID]; ok && !seen[s] {
+			if s.Name != ref.Name {
+				s.Name = ref.Name
+				m.renamedSession = ref.Name
+				renamed = true
+			}
+			merged = append(merged, s)
+			seen[s] = true
+			continue
+		}
+		if s, ok := byName[ref.Name]; ok && !seen[s] {
+			s.ID = ref.ID // backfill — discovered before ID tracking existed
+			merged = append(merged, s)
+			seen[s] = true
+			continue
+		}
+		// genuinely new — created directly via tmux, or by another midnight-director instance
+		ns := &session.Session{ID: ref.ID, Name: ref.Name}
+		_ = session.Refresh(ns)
+		session.LoadMark(ns)
+		merged = append(merged, ns)
+	}
+
+	m.sessions = merged
+	sortSessions(m.sessions)
+
+	if focusedSession != nil {
+		if idx := indexOfSession(m.sessions, focusedSession); idx >= 0 {
+			m.focused = idx
+		}
+	}
+	m.clampFocused()
+
+	return renamed
+}
+
 func (m Model) windowTitle() string {
 	running := 0
 	for _, s := range m.sessions {
@@ -241,7 +326,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.viewport = viewport.New(m.width-2, vpHeight)
 		m.help.Width = m.width - 6
-		m.screenInput.SetWidth(m.width - 4)
+		m.screenInput.SetWidth(m.width)
 		return m, nil
 
 	case tea.ResumeMsg:
@@ -311,9 +396,16 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		for i, s := range m.sessions {
 			cmds = append(cmds, pollSession(i, s))
 		}
+		cmds = append(cmds, listSessionRefs())
 		cmds = append(cmds, tickEvery(5*time.Second))
 		cmds = append(cmds, tea.SetWindowTitle(m.windowTitle()))
 		return m, tea.Batch(cmds...)
+
+	case sessionRefsMsg:
+		if m.reconcileSessions(msg) {
+			return m, clearRenamedAfter()
+		}
+		return m, nil
 
 	case errMsg:
 		m.err = msg
@@ -659,7 +751,7 @@ func (m Model) handleScreenKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.mode = modeScreenInput
 			m.screenInput.Reset()
 			m.screenInput.Placeholder = "send to " + s.Name + "… (ctrl+j/alt+enter for a newline)"
-			m.screenInput.SetWidth(m.width - 4)
+			m.screenInput.SetWidth(m.width)
 			return m, m.screenInput.Focus()
 		}
 		return m, nil
@@ -796,7 +888,8 @@ func createSession(name string) tea.Cmd {
 		if err := tmux.NewSession(name); err != nil {
 			return errMsg(err)
 		}
-		s := &session.Session{Name: name}
+		id, _ := tmux.SessionID(name) // best-effort — reconcileSessions backfills by name if this is empty
+		s := &session.Session{ID: id, Name: name}
 		_ = session.Refresh(s)
 		return sessionCreatedMsg(s)
 	}

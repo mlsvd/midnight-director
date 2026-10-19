@@ -29,6 +29,38 @@ func ListSessions() ([]string, error) {
 	return sessions, nil
 }
 
+// SessionRef pairs a session's current name with its tmux session_id, which stays stable across
+// renames — it's how reconcileSessions (see tui/update.go) tells "renamed elsewhere" apart from
+// "killed and a new one created" when another midnight-director instance changes a session.
+type SessionRef struct {
+	ID   string
+	Name string
+}
+
+// ListSessionsWithIDs is like ListSessions but also returns each session's stable session_id.
+func ListSessionsWithIDs() ([]SessionRef, error) {
+	out, err := exec.Command("tmux", "ls", "-F", "#{session_id} #{session_name}").Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	var refs []SessionRef
+	for _, l := range lines {
+		if l == "" {
+			continue
+		}
+		id, name, ok := strings.Cut(l, " ") // name may itself contain spaces — only split on the first
+		if !ok {
+			continue
+		}
+		refs = append(refs, SessionRef{ID: id, Name: name})
+	}
+	return refs, nil
+}
+
 func NewSession(name string) error {
 	// Ensure the server is running before creating a session. On macOS over SSH,
 	// new-session hangs when it has to start the daemon itself; start-server avoids that.
@@ -110,6 +142,15 @@ func CurrentCommand(session string) (string, error) {
 
 func PaneTitle(session string) (string, error) {
 	out, err := exec.Command("tmux", "display-message", "-t", session, "-p", "#{pane_title}").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// SessionID returns a session's stable tmux session_id (e.g. "$3"), unaffected by renames.
+func SessionID(session string) (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-t", session, "-p", "#{session_id}").Output()
 	if err != nil {
 		return "", err
 	}
