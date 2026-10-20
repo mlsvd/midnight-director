@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/malisev/midnight-director/internal/actions"
 	"github.com/malisev/midnight-director/internal/ai"
 	"github.com/malisev/midnight-director/internal/session"
 	"github.com/malisev/midnight-director/internal/tmux"
@@ -29,6 +30,8 @@ const (
 	modeRenameInput
 	modeAnnotateInput
 	modeMarkSelect
+	modeActionSelect
+	modeEmojiSelect
 )
 
 type menuItem int
@@ -42,6 +45,8 @@ const (
 	menuPrompt
 	menuMark
 	menuResetMark
+	menuEmoji
+	menuResetEmoji
 )
 
 type menuEntry struct {
@@ -49,9 +54,9 @@ type menuEntry struct {
 	label string
 }
 
-// menuEntries returns the dialog actions for the focused session. "mark" and
-// "reset mark" are mutually exclusive depending on whether the session is
-// already marked.
+// menuEntries returns the dialog actions for the focused session. "mark"/"reset mark" and
+// "emoji"/"reset emoji" are each mutually exclusive pairs depending on whether the session
+// already carries that tag — color and emoji are independent of each other.
 func (m Model) menuEntries() []menuEntry {
 	entries := []menuEntry{
 		{menuConnect, "connect"},
@@ -64,6 +69,11 @@ func (m Model) menuEntries() []menuEntry {
 		entries = append(entries, menuEntry{menuResetMark, "reset mark"})
 	} else {
 		entries = append(entries, menuEntry{menuMark, "mark"})
+	}
+	if len(m.sessions) > 0 && m.sessions[m.focused].Emoji != "" {
+		entries = append(entries, menuEntry{menuResetEmoji, "reset emoji"})
+	} else {
+		entries = append(entries, menuEntry{menuEmoji, "emoji"})
 	}
 	entries = append(entries, menuEntry{menuKill, "kill"})
 	return entries
@@ -83,6 +93,10 @@ type Model struct {
 	mode             viewMode
 	menuCursor       int
 	markCursor       int
+	emojiCursor      int
+	actionOptions    []actions.Action // scanned fresh each time the "left" dropdown opens
+	actionCursor     int
+	actionFlash      string // transient result of the last custom action run — see clearActionFlashAfter
 	input            textinput.Model
 	screenInput      textarea.Model // multi-line composer for the preview overlay's "send" action
 	viewport         viewport.Model

@@ -12,6 +12,7 @@ type keyMap struct {
 	Picker   key.Binding
 	Child    key.Binding
 	Menu     key.Binding
+	Actions  key.Binding
 	New      key.Binding
 	Rename   key.Binding
 	Annotate key.Binding
@@ -29,7 +30,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.PageDown, k.PageUp},
-		{k.Input, k.Screen, k.Picker, k.Child, k.Menu, k.New},
+		{k.Input, k.Screen, k.Picker, k.Child, k.Menu, k.Actions, k.New},
 		{k.Rename, k.Annotate, k.Generate, k.AutoSum},
 		{k.Theme, k.Suspend, k.Quit},
 	}
@@ -63,6 +64,7 @@ func (m Model) helpKeys() keyMap {
 		Picker:   key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "prompts")),
 		Child:    key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "child")),
 		Menu:     key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "menu")),
+		Actions:  key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←", "actions")),
 		New:      key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
 		Rename:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "rename")),
 		Annotate: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "note")),

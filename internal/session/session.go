@@ -14,6 +14,10 @@ const SummaryDebounce = 4 * time.Second
 // it survives a midnight-director restart (the process itself keeps no state).
 const MarkOption = "@md-mark"
 
+// EmojiOption is the tmux user option a session's emoji tag is persisted under — same
+// persistence story as MarkOption, just a separate option so color and emoji are independent.
+const EmojiOption = "@md-emoji"
+
 type State int
 
 const (
@@ -51,6 +55,7 @@ type Session struct {
 	StableStateSince time.Time // when current done/waiting state was first entered
 	Note             string
 	Mark             string // persisted via tmux user option, see MarkOption
+	Emoji            string // persisted via tmux user option, see EmojiOption
 	IsClaude         bool
 	LastOutput       string
 	LastChangeTime   time.Time
@@ -159,6 +164,28 @@ func SetMark(s *Session, mark string) error {
 		return err
 	}
 	s.Mark = mark
+	return nil
+}
+
+// LoadEmoji hydrates s.Emoji from the tmux session option, so an emoji tag
+// set in a previous midnight-director run is restored on rediscovery.
+func LoadEmoji(s *Session) {
+	if v, err := tmux.GetSessionOption(s.Name, EmojiOption); err == nil {
+		s.Emoji = v
+	}
+}
+
+// SetEmoji persists emoji to the session's tmux option and updates s.Emoji.
+// Passing "" clears the emoji tag.
+func SetEmoji(s *Session, emoji string) error {
+	if emoji == "" {
+		if err := tmux.UnsetSessionOption(s.Name, EmojiOption); err != nil {
+			return err
+		}
+	} else if err := tmux.SetSessionOption(s.Name, EmojiOption, emoji); err != nil {
+		return err
+	}
+	s.Emoji = emoji
 	return nil
 }
 

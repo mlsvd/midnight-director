@@ -34,39 +34,45 @@ func (m Model) View() string {
 	return b.String()
 }
 
-func (m Model) buildListContent() string {
+// buildListContent renders the session list and also reports how many extra lines the focused
+// session's open popup (menu/mark/emoji/action select, inline input, kill confirm) added below
+// its row — ensureFocusedVisible needs that to scroll far enough down that the popup isn't cut
+// off by the viewport when the focused row sits near the bottom.
+func (m Model) buildListContent() (string, int) {
 	if len(m.sessions) == 0 {
 		msg := m.theme.Empty.Render("No sessions. Press  n  to create one.")
-		return lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center, msg)
+		return lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center, msg), 0
 	}
 
 	var b strings.Builder
-	{
-		for i, s := range m.sessions {
-			b.WriteString(m.renderSessionRow(i, s))
+	extraLines := 0
+	for i, s := range m.sessions {
+		b.WriteString(m.renderSessionRow(i, s))
+		b.WriteString("\n")
+		if s.Note != "" {
+			b.WriteString(m.renderNoteLine(s))
 			b.WriteString("\n")
-			if s.Note != "" {
-				b.WriteString(m.renderNoteLine(s))
-				b.WriteString("\n")
+		}
+		if i == m.focused {
+			var block string
+			switch m.mode {
+			case modeMenu:
+				block = m.viewMenu()
+			case modeMarkSelect:
+				block = m.viewMarkSelect()
+			case modeActionSelect:
+				block = m.viewActionSelect()
+			case modeEmojiSelect:
+				block = m.viewEmojiSelect()
+			case modeQuickInput, modeAnnotateInput, modeRenameInput:
+				block = m.renderInlineInput("  ")
+			case modeKillConfirm:
+				block = m.theme.Confirm.Render(fmt.Sprintf(`  Kill "%s"? [y/N]`, s.Name))
 			}
-			if i == m.focused {
-				switch m.mode {
-				case modeMenu:
-					b.WriteString(m.viewMenu())
-					b.WriteString("\n")
-				case modeMarkSelect:
-					b.WriteString(m.viewMarkSelect())
-					b.WriteString("\n")
-				case modeQuickInput:
-					b.WriteString(m.renderInlineInput("  "))
-					b.WriteString("\n")
-				case modeKillConfirm:
-					b.WriteString(m.theme.Confirm.Render(fmt.Sprintf(`  Kill "%s"? [y/N]`, s.Name)))
-					b.WriteString("\n")
-				case modeAnnotateInput, modeRenameInput:
-					b.WriteString(m.renderInlineInput("  "))
-					b.WriteString("\n")
-				}
+			if block != "" {
+				b.WriteString(block)
+				b.WriteString("\n")
+				extraLines = strings.Count(block, "\n") + 1
 			}
 		}
 	}
@@ -80,7 +86,7 @@ func (m Model) buildListContent() string {
 		b.WriteString("\n")
 	}
 
-	return b.String()
+	return b.String(), extraLines
 }
 
 func (m Model) viewSessionList() string {
@@ -169,6 +175,9 @@ func (m Model) renderSessionRow(i int, s *session.Session) string {
 	}
 
 	namePrefix := bar + icon + nameStyled
+	if s.Emoji != "" {
+		namePrefix += " " + s.Emoji
+	}
 	if pad := m.nameColumnWidth() - lipgloss.Width(namePrefix); pad > 0 {
 		namePrefix += strings.Repeat(" ", pad)
 	}
@@ -212,6 +221,9 @@ func (m Model) nameColumnWidth() int {
 	for _, s := range m.sessions {
 		depth := strings.Count(s.Name, "/")
 		prefix := 2*depth + 2 + 2 + lipgloss.Width(s.Name) // bar + icon + name
+		if s.Emoji != "" {
+			prefix += 1 + lipgloss.Width(s.Emoji) // " " + emoji
+		}
 		if prefix > w {
 			w = prefix
 		}
@@ -313,6 +325,31 @@ func (m Model) viewMarkSelect() string {
 	return lipgloss.NewStyle().MarginLeft(2).Render(m.theme.Menu.Render(strings.Join(rows, "\n")))
 }
 
+func (m Model) viewActionSelect() string {
+	var rows []string
+	for i, opt := range m.actionOptions {
+		if i == m.actionCursor {
+			rows = append(rows, m.theme.MenuSelected.Render(opt.Name))
+		} else {
+			rows = append(rows, m.theme.MenuNormal.Render(opt.Name))
+		}
+	}
+	return lipgloss.NewStyle().MarginLeft(2).Render(m.theme.Menu.Render(strings.Join(rows, "\n")))
+}
+
+func (m Model) viewEmojiSelect() string {
+	var rows []string
+	for i, opt := range emojiOptions {
+		line := opt.emoji + " " + opt.label
+		if i == m.emojiCursor {
+			rows = append(rows, m.theme.MenuSelected.Render(line))
+		} else {
+			rows = append(rows, m.theme.MenuNormal.Render(line))
+		}
+	}
+	return lipgloss.NewStyle().MarginLeft(2).Render(m.theme.Menu.Render(strings.Join(rows, "\n")))
+}
+
 func (m Model) viewScreen() string {
 	var b strings.Builder
 
@@ -375,8 +412,11 @@ func (m Model) viewCommandBar() string {
 	h.Width = m.width - 6
 	h.ShowAll = true
 
-	promptsPath := "~/.config/midnight-director/{prompts.json,prompts/*.{txt,md}}"
-	tipsText := "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
+	tipsText := m.actionFlash
+	if tipsText == "" {
+		promptsPath := "~/.config/midnight-director/{prompts.json,prompts/*.{txt,md}}"
+		tipsText = "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
+	}
 
 	// Truncate to one line so the bar height stays predictable on narrow terminals.
 	// CommandBar is Width(m.width-2) with Padding(0,1), so inner width = m.width-4.

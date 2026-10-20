@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/malisev/midnight-director/internal/actions"
 	"github.com/malisev/midnight-director/internal/ai"
 	"github.com/malisev/midnight-director/internal/session"
 	"github.com/malisev/midnight-director/internal/tmux"
@@ -30,6 +31,45 @@ type summaryResultMsg struct {
 	text string
 }
 type errMsg error
+type clearActionFlashMsg struct{}
+type actionResultMsg struct {
+	name   string
+	output string
+	err    error
+}
+
+// runAction resolves the session's current tmux session_id and pane PID right before running —
+// not when the dropdown was opened — so the script always sees up-to-date values.
+func runAction(a actions.Action, sessionName string) tea.Cmd {
+	return func() tea.Msg {
+		id, _ := tmux.SessionID(sessionName)
+		pid, _ := tmux.PanePID(sessionName)
+		out, err := a.Run(sessionName, id, pid)
+		return actionResultMsg{name: a.Name, output: string(out), err: err}
+	}
+}
+
+func clearActionFlashAfter() tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(4 * time.Second)
+		return clearActionFlashMsg{}
+	}
+}
+
+// firstLine returns a short one-line summary for the action-result flash: the first non-empty
+// line of the script's combined output if there is one (most useful when it failed loudly),
+// falling back to the exec error itself.
+func firstLine(output string, err error) string {
+	for _, l := range strings.Split(output, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			return l
+		}
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
 
 func discoverSessions() tea.Cmd {
 	return func() tea.Msg {
@@ -42,6 +82,7 @@ func discoverSessions() tea.Cmd {
 			s := &session.Session{ID: ref.ID, Name: ref.Name}
 			_ = session.Refresh(s)
 			session.LoadMark(s)
+			session.LoadEmoji(s)
 			sessions = append(sessions, s)
 		}
 		return sessionsDiscoveredMsg(sessions)
@@ -254,6 +295,7 @@ func (m *Model) reconcileSessions(refs []tmux.SessionRef) bool {
 		ns := &session.Session{ID: ref.ID, Name: ref.Name}
 		_ = session.Refresh(ns)
 		session.LoadMark(ns)
+		session.LoadEmoji(ns)
 		merged = append(merged, ns)
 	}
 
@@ -307,8 +349,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = vpH
 		}
 		m.clampFocused()
-		m.viewport.SetContent(m.buildListContent())
-		m.ensureFocusedVisible()
+		content, extraLines := m.buildListContent()
+		m.viewport.SetContent(content)
+		m.ensureFocusedVisible(extraLines)
 	}
 
 	return m, cmd
@@ -415,6 +458,19 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		m.renamedSession = ""
 		return m, nil
 
+	case actionResultMsg:
+		if msg.err != nil {
+			detail := firstLine(msg.output, msg.err)
+			m.actionFlash = "✗ " + msg.name + ": " + detail
+		} else {
+			m.actionFlash = "✓ " + msg.name
+		}
+		return m, clearActionFlashAfter()
+
+	case clearActionFlashMsg:
+		m.actionFlash = ""
+		return m, nil
+
 	case pickerSentMsg:
 		fromScreen := m.pickerFromScreen
 		m.pickerFromScreen = false
@@ -466,6 +522,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleAnnotateKey(msg)
 	case modeMarkSelect:
 		return m.handleMarkSelectKey(msg)
+	case modeActionSelect:
+		return m.handleActionSelectKey(msg)
+	case modeEmojiSelect:
+		return m.handleEmojiSelectKey(msg)
 	}
 	return m, nil
 }
@@ -526,6 +586,16 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if len(m.sessions) > 0 {
 			m.mode = modeMenu
 			m.menuCursor = 0
+		}
+
+	case "left", "h":
+		if len(m.sessions) > 0 {
+			opts, _ := actions.Load(actions.DefaultDir())
+			if len(opts) > 0 {
+				m.actionOptions = opts
+				m.actionCursor = 0
+				m.mode = modeActionSelect
+			}
 		}
 
 	case "i", "enter":
@@ -651,6 +721,14 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 		_ = session.SetMark(s, "")
 		m.mode = modeList
 
+	case menuEmoji:
+		m.mode = modeEmojiSelect
+		m.emojiCursor = 0
+
+	case menuResetEmoji:
+		_ = session.SetEmoji(s, "")
+		m.mode = modeList
+
 	case menuKill:
 		m.mode = modeKillConfirm
 	}
@@ -674,6 +752,50 @@ func (m Model) handleMarkSelectKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			_ = session.SetMark(m.sessions[m.focused], markOptions[m.markCursor].key)
 		}
 		m.mode = modeList
+	}
+	return m, nil
+}
+
+func (m Model) handleEmojiSelectKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.emojiCursor > 0 {
+			m.emojiCursor--
+		}
+	case "down", "j":
+		if m.emojiCursor < len(emojiOptions)-1 {
+			m.emojiCursor++
+		}
+	case "left", "esc":
+		m.mode = modeList
+	case "enter":
+		if len(m.sessions) > 0 {
+			_ = session.SetEmoji(m.sessions[m.focused], emojiOptions[m.emojiCursor].emoji)
+		}
+		m.mode = modeList
+	}
+	return m, nil
+}
+
+func (m Model) handleActionSelectKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.actionCursor > 0 {
+			m.actionCursor--
+		}
+	case "down", "j":
+		if m.actionCursor < len(m.actionOptions)-1 {
+			m.actionCursor++
+		}
+	case "right", "esc":
+		m.mode = modeList
+	case "enter":
+		m.mode = modeList
+		if len(m.sessions) > 0 && m.actionCursor < len(m.actionOptions) {
+			a := m.actionOptions[m.actionCursor]
+			s := m.sessions[m.focused]
+			return m, runAction(a, s.Name)
+		}
 	}
 	return m, nil
 }
@@ -914,7 +1036,11 @@ func (m *Model) clampFocused() {
 	}
 }
 
-func (m *Model) ensureFocusedVisible() {
+// ensureFocusedVisible scrolls the viewport so the focused row is visible. extraLines is the
+// height of any popup (menu, mark/emoji/action select, inline input, kill confirm) currently
+// open below that row — without it, opening a menu near the bottom of a long list would leave
+// its items scrolled out of view instead of pulling them on screen. See buildListContent.
+func (m *Model) ensureFocusedVisible(extraLines int) {
 	if len(m.sessions) == 0 || m.viewport.Height == 0 {
 		return
 	}
@@ -925,7 +1051,7 @@ func (m *Model) ensureFocusedVisible() {
 		}
 		top += sessionRows(s)
 	}
-	bottom := top + sessionRows(m.sessions[m.focused]) - 1
+	bottom := top + sessionRows(m.sessions[m.focused]) - 1 + extraLines
 	if top < m.viewport.YOffset {
 		m.viewport.SetYOffset(top)
 	} else if bottom >= m.viewport.YOffset+m.viewport.Height {
