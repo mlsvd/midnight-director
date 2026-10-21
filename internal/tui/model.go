@@ -32,6 +32,7 @@ const (
 	modeMarkSelect
 	modeActionSelect
 	modeEmojiSelect
+	modeFilter
 )
 
 type menuItem int
@@ -97,6 +98,7 @@ type Model struct {
 	actionOptions    []actions.Action // scanned fresh each time the "left" dropdown opens
 	actionCursor     int
 	actionFlash      string // transient result of the last custom action run — see clearActionFlashAfter
+	filterQuery      string // live session-name filter — see sessionVisible; "" shows everything
 	input            textinput.Model
 	screenInput      textarea.Model // multi-line composer for the preview overlay's "send" action
 	viewport         viewport.Model

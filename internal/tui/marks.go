@@ -36,6 +36,18 @@ func markStyle(key string) (lipgloss.Style, bool) {
 	return lipgloss.Style{}, false
 }
 
+// markIndex returns the markOptions index for key, or 0 if unset/unknown — used to seed the
+// select popup's cursor on the session's current color, so re-opening it to override feels
+// like editing the current value rather than starting from scratch.
+func markIndex(key string) int {
+	for i, o := range markOptions {
+		if o.key == key {
+			return i
+		}
+	}
+	return 0
+}
+
 // emojiOption is an emoji tag a session can carry alongside (not instead of) its color mark.
 // Unlike markOption there's no separate persisted key — the emoji itself is the persisted value,
 // since it's already a short, stable, self-describing string.
@@ -55,4 +67,14 @@ var emojiOptions = []emojiOption{
 	{"👀", "review"},
 	{"🔥", "urgent"},
 	{"🚀", "ship"},
+}
+
+// emojiIndex returns the emojiOptions index for emoji, or 0 if unset/unknown — see markIndex.
+func emojiIndex(emoji string) int {
+	for i, o := range emojiOptions {
+		if o.emoji == emoji {
+			return i
+		}
+	}
+	return 0
 }

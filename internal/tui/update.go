@@ -249,6 +249,50 @@ func indexOfSession(sessions []*session.Session, target *session.Session) int {
 	return -1
 }
 
+// sessionVisible reports whether s passes the active name filter (always true when no filter
+// is set). Case-insensitive substring match on the session name.
+func (m Model) sessionVisible(s *session.Session) bool {
+	if m.filterQuery == "" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(s.Name), strings.ToLower(m.filterQuery))
+}
+
+// nextVisible returns the nearest index to from (moving by dir, which must be +1 or -1) whose
+// session passes the filter, or from unchanged if there isn't one — so up/down navigation skips
+// over sessions hidden by an active filter instead of landing on them.
+func (m Model) nextVisible(from, dir int) int {
+	i := from
+	for {
+		i += dir
+		if i < 0 || i >= len(m.sessions) {
+			return from
+		}
+		if m.sessionVisible(m.sessions[i]) {
+			return i
+		}
+	}
+}
+
+// clampFocusedToFilter nudges m.focused to the nearest visible session when the currently
+// focused one has been hidden by the filter (e.g. right after the query changes). If nothing
+// matches at all, it leaves m.focused as-is — buildListContent shows a "no matches" message.
+func (m *Model) clampFocusedToFilter() {
+	if len(m.sessions) == 0 || m.filterQuery == "" || m.sessionVisible(m.sessions[m.focused]) {
+		return
+	}
+	for d := 1; d < len(m.sessions); d++ {
+		if i := m.focused + d; i < len(m.sessions) && m.sessionVisible(m.sessions[i]) {
+			m.focused = i
+			return
+		}
+		if i := m.focused - d; i >= 0 && m.sessionVisible(m.sessions[i]) {
+			m.focused = i
+			return
+		}
+	}
+}
+
 // reconcileSessions merges a fresh tmux session list into m.sessions, so sessions created,
 // killed, or renamed by another midnight-director instance (or a bare tmux command) show up
 // here without a restart. Matching is by tmux's stable session_id first — that's what lets a
@@ -349,9 +393,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Height = vpH
 		}
 		m.clampFocused()
+		m.clampFocusedToFilter()
 		content, extraLines := m.buildListContent()
 		m.viewport.SetContent(content)
-		m.ensureFocusedVisible(extraLines)
+		if m.mode == modeFilter || m.mode == modeNewSession || m.mode == modeCommandInput {
+			// these three render their input as a trailing line after every session row,
+			// not tied to the focused row's position — always scroll to the true bottom
+			// rather than relying on ensureFocusedVisible's focused-row heuristic.
+			m.viewport.GotoBottom()
+		} else {
+			m.ensureFocusedVisible(extraLines)
+		}
 	}
 
 	return m, cmd
@@ -526,6 +578,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m.handleActionSelectKey(msg)
 	case modeEmojiSelect:
 		return m.handleEmojiSelectKey(msg)
+	case modeFilter:
+		return m.handleFilterKey(msg)
 	}
 	return m, nil
 }
@@ -539,27 +593,51 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, tea.Suspend
 
 	case "up", "k":
-		if m.focused > 0 {
-			m.focused--
-		}
+		m.focused = m.nextVisible(m.focused, -1)
 
 	case "down", "j":
-		if m.focused < len(m.sessions)-1 {
-			m.focused++
-		}
+		m.focused = m.nextVisible(m.focused, 1)
 
 	case "pgdown", "ctrl+d":
-		if len(m.sessions) > 0 {
-			m.focused += m.viewportPageSize()
-			if m.focused >= len(m.sessions) {
-				m.focused = len(m.sessions) - 1
-			}
+		for i := 0; i < m.viewportPageSize(); i++ {
+			m.focused = m.nextVisible(m.focused, 1)
 		}
 
 	case "pgup", "ctrl+u":
-		m.focused -= m.viewportPageSize()
-		if m.focused < 0 {
-			m.focused = 0
+		for i := 0; i < m.viewportPageSize(); i++ {
+			m.focused = m.nextVisible(m.focused, -1)
+		}
+
+	case "/":
+		m.mode = modeFilter
+		m.input.SetValue(m.filterQuery)
+		m.input.Placeholder = "filter sessions…"
+		m.input.Focus()
+		return m, textinput.Blink
+
+	case "esc":
+		m.filterQuery = ""
+
+	case "o":
+		if len(m.sessions) > 0 {
+			return m, connectToSession(m.sessions[m.focused].Name, m.backHint())
+		}
+
+	case "x":
+		if len(m.sessions) > 0 {
+			m.mode = modeKillConfirm
+		}
+
+	case "m":
+		if len(m.sessions) > 0 {
+			m.mode = modeMarkSelect
+			m.markCursor = markIndex(m.sessions[m.focused].Mark)
+		}
+
+	case "E":
+		if len(m.sessions) > 0 {
+			m.mode = modeEmojiSelect
+			m.emojiCursor = emojiIndex(m.sessions[m.focused].Emoji)
 		}
 
 	case " ":
@@ -715,7 +793,7 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 
 	case menuMark:
 		m.mode = modeMarkSelect
-		m.markCursor = 0
+		m.markCursor = markIndex(s.Mark)
 
 	case menuResetMark:
 		_ = session.SetMark(s, "")
@@ -723,7 +801,7 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 
 	case menuEmoji:
 		m.mode = modeEmojiSelect
-		m.emojiCursor = 0
+		m.emojiCursor = emojiIndex(s.Emoji)
 
 	case menuResetEmoji:
 		_ = session.SetEmoji(s, "")
@@ -851,6 +929,31 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// handleFilterKey drives the "/" session-name filter. It filters live as you type — every
+// keystroke updates m.filterQuery immediately — rather than waiting for Enter. Enter just
+// commits (returns to the list with the filter still applied); Esc clears it entirely.
+func (m Model) handleFilterKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.filterQuery = ""
+		m.input.SetValue("")
+		m.input.Blur()
+		m.mode = modeList
+		return m, nil
+
+	case "enter", "ctrl+j":
+		m.filterQuery = strings.TrimSpace(m.input.Value())
+		m.input.Blur()
+		m.mode = modeList
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.filterQuery = m.input.Value()
 	return m, cmd
 }
 
@@ -1048,6 +1151,9 @@ func (m *Model) ensureFocusedVisible(extraLines int) {
 	for i, s := range m.sessions {
 		if i == m.focused {
 			break
+		}
+		if !m.sessionVisible(s) {
+			continue // not actually rendered — see buildListContent
 		}
 		top += sessionRows(s)
 	}

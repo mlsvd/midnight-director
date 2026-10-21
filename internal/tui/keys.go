@@ -7,6 +7,7 @@ type keyMap struct {
 	Down     key.Binding
 	PageDown key.Binding
 	PageUp   key.Binding
+	Filter   key.Binding
 	Input    key.Binding
 	Screen   key.Binding
 	Picker   key.Binding
@@ -14,6 +15,10 @@ type keyMap struct {
 	Menu     key.Binding
 	Actions  key.Binding
 	New      key.Binding
+	Connect  key.Binding
+	Kill     key.Binding
+	Mark     key.Binding
+	Emoji    key.Binding
 	Rename   key.Binding
 	Annotate key.Binding
 	Generate key.Binding
@@ -29,8 +34,9 @@ func (k keyMap) ShortHelp() []key.Binding {
 
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.PageDown, k.PageUp},
+		{k.Up, k.Down, k.PageDown, k.PageUp, k.Filter},
 		{k.Input, k.Screen, k.Picker, k.Child, k.Menu, k.Actions, k.New},
+		{k.Connect, k.Kill, k.Mark, k.Emoji},
 		{k.Rename, k.Annotate, k.Generate, k.AutoSum},
 		{k.Theme, k.Suspend, k.Quit},
 	}
@@ -59,6 +65,7 @@ func (m Model) helpKeys() keyMap {
 		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
 		PageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d"), key.WithHelp("pgdn", "page down")),
 		PageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u"), key.WithHelp("pgup", "page up")),
+		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		Input:    key.NewBinding(key.WithKeys("i", "enter"), key.WithHelp("i", "input")),
 		Screen:   key.NewBinding(key.WithKeys(" "), key.WithHelp("spc", "screen")),
 		Picker:   key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "prompts")),
@@ -66,6 +73,10 @@ func (m Model) helpKeys() keyMap {
 		Menu:     key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("→", "menu")),
 		Actions:  key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("←", "actions")),
 		New:      key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "new")),
+		Connect:  key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "connect")),
+		Kill:     key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "kill")),
+		Mark:     key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "color")),
+		Emoji:    key.NewBinding(key.WithKeys("E"), key.WithHelp("E", "emoji")),
 		Rename:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "rename")),
 		Annotate: key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "note")),
 		Generate: key.NewBinding(key.WithKeys("g"), key.WithHelp("g", genLabel)),

@@ -46,7 +46,12 @@ func (m Model) buildListContent() (string, int) {
 
 	var b strings.Builder
 	extraLines := 0
+	shown := 0
 	for i, s := range m.sessions {
+		if !m.sessionVisible(s) {
+			continue
+		}
+		shown++
 		b.WriteString(m.renderSessionRow(i, s))
 		b.WriteString("\n")
 		if s.Note != "" {
@@ -77,12 +82,20 @@ func (m Model) buildListContent() (string, int) {
 		}
 	}
 
+	if shown == 0 {
+		b.WriteString(m.theme.Empty.Render(fmt.Sprintf("  No sessions match %q", m.filterQuery)))
+		b.WriteString("\n")
+	}
+
 	switch m.mode {
 	case modeNewSession:
 		b.WriteString(m.renderInlineInput("  new session: "))
 		b.WriteString("\n")
 	case modeCommandInput:
 		b.WriteString(m.renderInlineInput("  command: "))
+		b.WriteString("\n")
+	case modeFilter:
+		b.WriteString(m.renderInlineInput("  filter: "))
 		b.WriteString("\n")
 	}
 
@@ -219,6 +232,9 @@ func (m Model) nameColumnWidth() int {
 	}
 	w := 0
 	for _, s := range m.sessions {
+		if !m.sessionVisible(s) {
+			continue
+		}
 		depth := strings.Count(s.Name, "/")
 		prefix := 2*depth + 2 + 2 + lipgloss.Width(s.Name) // bar + icon + name
 		if s.Emoji != "" {
@@ -413,7 +429,12 @@ func (m Model) viewCommandBar() string {
 	h.ShowAll = true
 
 	tipsText := m.actionFlash
-	if tipsText == "" {
+	switch {
+	case tipsText != "":
+		// keep the action-run result as-is
+	case m.filterQuery != "":
+		tipsText = fmt.Sprintf("filter: %q (esc to clear)", m.filterQuery)
+	default:
 		promptsPath := "~/.config/midnight-director/{prompts.json,prompts/*.{txt,md}}"
 		tipsText = "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
 	}
