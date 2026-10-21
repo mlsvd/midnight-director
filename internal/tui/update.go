@@ -381,11 +381,21 @@ func (m Model) commandBarHeight() int {
 	return 2 + maxRows // 1 top border + help rows + 1 tips line
 }
 
+// headerHeight returns how many rows the top-of-screen header occupies: just the title, or
+// title + the active-filter banner — see renderFilterBanner — so the viewport shrinks to make
+// room for it instead of overflowing the terminal by a line while a filter is set.
+func (m Model) headerHeight() int {
+	if m.filterQuery != "" {
+		return 2
+	}
+	return 1
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m, cmd := m.innerUpdate(msg)
 
 	if m.width > 0 {
-		vpH := m.height - 1 - m.commandBarHeight()
+		vpH := m.height - m.headerHeight() - m.commandBarHeight()
 		if vpH < 1 {
 			vpH = 1
 		}
@@ -415,7 +425,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		vpHeight := m.height - 1 - m.commandBarHeight()
+		vpHeight := m.height - m.headerHeight() - m.commandBarHeight()
 		if vpHeight < 1 {
 			vpHeight = 1
 		}

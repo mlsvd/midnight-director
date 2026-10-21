@@ -65,7 +65,7 @@ func (m Model) helpKeys() keyMap {
 		Down:     key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
 		PageDown: key.NewBinding(key.WithKeys("pgdown", "ctrl+d"), key.WithHelp("pgdn", "page down")),
 		PageUp:   key.NewBinding(key.WithKeys("pgup", "ctrl+u"), key.WithHelp("pgup", "page up")),
-		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+		Filter:   key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter (esc clears)")),
 		Input:    key.NewBinding(key.WithKeys("i", "enter"), key.WithHelp("i", "input")),
 		Screen:   key.NewBinding(key.WithKeys(" "), key.WithHelp("spc", "screen")),
 		Picker:   key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "prompts")),

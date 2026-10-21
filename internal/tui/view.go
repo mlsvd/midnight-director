@@ -23,6 +23,10 @@ func (m Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.theme.Title.Render("midnight director"))
 	b.WriteString("\n")
+	if m.filterQuery != "" {
+		b.WriteString(m.renderFilterBanner())
+		b.WriteString("\n")
+	}
 
 	switch m.mode {
 	case modeScreenView, modeScreenInput:
@@ -32,6 +36,21 @@ func (m Model) View() string {
 	}
 
 	return b.String()
+}
+
+// renderFilterBanner is the prominent, always-visible reminder of what's currently filtered —
+// shown right under the title rather than buried in the tips line, so it can't be missed, with
+// the clear-filter key spelled out right there instead of relying on it being discoverable
+// elsewhere.
+func (m Model) renderFilterBanner() string {
+	matches := 0
+	for _, s := range m.sessions {
+		if m.sessionVisible(s) {
+			matches++
+		}
+	}
+	text := fmt.Sprintf("🔎 filter: %q — %d of %d sessions  ·  Esc to clear", m.filterQuery, matches, len(m.sessions))
+	return m.theme.Title.Render(text)
 }
 
 // buildListContent renders the session list and also reports how many extra lines the focused
@@ -429,12 +448,7 @@ func (m Model) viewCommandBar() string {
 	h.ShowAll = true
 
 	tipsText := m.actionFlash
-	switch {
-	case tipsText != "":
-		// keep the action-run result as-is
-	case m.filterQuery != "":
-		tipsText = fmt.Sprintf("filter: %q (esc to clear)", m.filterQuery)
-	default:
+	if tipsText == "" {
 		promptsPath := "~/.config/midnight-director/{prompts.json,prompts/*.{txt,md}}"
 		tipsText = "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
 	}
