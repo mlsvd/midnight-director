@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -71,20 +72,32 @@ func firstLine(output string, err error) string {
 	return ""
 }
 
+// discoverSessions fetches every tmux session and hydrates each one's state. Each hydration is
+// several separate tmux subprocess round-trips (current command, pane title, capture-pane, pane
+// PID, two tmux option reads) — done one session at a time, that serial exec overhead is what
+// made the list visibly slow to populate with many sessions. Fanning them out across goroutines
+// cuts the wall-clock cost to roughly the slowest single session instead of the sum of all of
+// them, matching how the ongoing per-tick poll (pollSession) already runs one Cmd per session.
 func discoverSessions() tea.Cmd {
 	return func() tea.Msg {
 		refs, err := tmux.ListSessionsWithIDs()
 		if err != nil {
 			return errMsg(err)
 		}
-		var sessions []*session.Session
-		for _, ref := range refs {
+		sessions := make([]*session.Session, len(refs))
+		var wg sync.WaitGroup
+		for i, ref := range refs {
 			s := &session.Session{ID: ref.ID, Name: ref.Name}
-			_ = session.Refresh(s)
-			session.LoadMark(s)
-			session.LoadEmoji(s)
-			sessions = append(sessions, s)
+			sessions[i] = s
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = session.Refresh(s)
+				session.LoadMark(s)
+				session.LoadEmoji(s)
+			}()
 		}
+		wg.Wait()
 		return sessionsDiscoveredMsg(sessions)
 	}
 }
@@ -134,8 +147,20 @@ func captureScreen(idx int, name string) tea.Cmd {
 	}
 }
 
+// summarizeConcurrency caps how many AI summarize calls run at once. Each one is a real `claude
+// -p`/equivalent subprocess making an LLM call; when several sessions go idle around the same
+// time (common right after enabling auto-summarize, or right at startup if sessions were
+// already idle), they'd otherwise all fire simultaneously and compete for the same CPU/network/
+// API rate limits, making every one of them slower rather than actually running in parallel.
+// Extra eligible sessions just wait — pollMsg re-checks them every tick until a slot frees up.
+const summarizeConcurrency = 2
+
+var summarizeSem = make(chan struct{}, summarizeConcurrency)
+
 func summarizeSession(idx int, paneText, aiCmd string) tea.Cmd {
 	return func() tea.Msg {
+		summarizeSem <- struct{}{}
+		defer func() { <-summarizeSem }()
 		text, err := ai.Summarize(aiCmd, paneText)
 		if err != nil {
 			return summaryResultMsg{idx: idx, text: ""}
@@ -293,14 +318,33 @@ func (m *Model) clampFocusedToFilter() {
 	}
 }
 
+// sessionHydratedMsg is a no-op completion ping for hydrateSession — buildListContent reads the
+// *session.Session fields live off the shared pointer, so the message only needs to exist to
+// wake Update() up for a re-render; it carries nothing itself.
+type sessionHydratedMsg struct{}
+
+// hydrateSession fills in a newly-discovered session's state and tmux-persisted tags in the
+// background. reconcileSessions runs synchronously on the main update goroutine (it's not a
+// tea.Cmd) — doing this work there instead would block all key handling and rendering for as
+// long as the tmux subprocess round-trips take, once per newly-seen session.
+func hydrateSession(s *session.Session) tea.Cmd {
+	return func() tea.Msg {
+		_ = session.Refresh(s)
+		session.LoadMark(s)
+		session.LoadEmoji(s)
+		return sessionHydratedMsg{}
+	}
+}
+
 // reconcileSessions merges a fresh tmux session list into m.sessions, so sessions created,
 // killed, or renamed by another midnight-director instance (or a bare tmux command) show up
 // here without a restart. Matching is by tmux's stable session_id first — that's what lets a
 // rename be recognized as a rename (preserving Note/Summary/Mark/in-flight state) rather than
 // read as "killed + new session created". Falls back to matching by name for sessions
-// discovered before IDs were tracked. Returns true if any session was renamed, so the caller
-// can trigger the same "moved" flash a local rename gets.
-func (m *Model) reconcileSessions(refs []tmux.SessionRef) bool {
+// discovered before IDs were tracked. Returns whether any session was renamed (so the caller
+// can trigger the same "moved" flash a local rename gets) and any commands needed to hydrate
+// genuinely new sessions in the background — see hydrateSession.
+func (m *Model) reconcileSessions(refs []tmux.SessionRef) (bool, []tea.Cmd) {
 	byID := make(map[string]*session.Session, len(m.sessions))
 	byName := make(map[string]*session.Session, len(m.sessions))
 	for _, s := range m.sessions {
@@ -316,6 +360,7 @@ func (m *Model) reconcileSessions(refs []tmux.SessionRef) bool {
 	}
 
 	renamed := false
+	var newCmds []tea.Cmd
 	seen := make(map[*session.Session]bool, len(refs))
 	merged := make([]*session.Session, 0, len(refs))
 	for _, ref := range refs {
@@ -335,12 +380,11 @@ func (m *Model) reconcileSessions(refs []tmux.SessionRef) bool {
 			seen[s] = true
 			continue
 		}
-		// genuinely new — created directly via tmux, or by another midnight-director instance
+		// genuinely new — created directly via tmux, or by another midnight-director instance.
+		// Appears in the list immediately with blank state; hydrateSession fills it in async.
 		ns := &session.Session{ID: ref.ID, Name: ref.Name}
-		_ = session.Refresh(ns)
-		session.LoadMark(ns)
-		session.LoadEmoji(ns)
 		merged = append(merged, ns)
+		newCmds = append(newCmds, hydrateSession(ns))
 	}
 
 	m.sessions = merged
@@ -353,7 +397,7 @@ func (m *Model) reconcileSessions(refs []tmux.SessionRef) bool {
 	}
 	m.clampFocused()
 
-	return renamed
+	return renamed, newCmds
 }
 
 func (m Model) windowTitle() string {
@@ -507,9 +551,13 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case sessionRefsMsg:
-		if m.reconcileSessions(msg) {
-			return m, clearRenamedAfter()
+		renamed, newCmds := m.reconcileSessions(msg)
+		if renamed {
+			newCmds = append(newCmds, clearRenamedAfter())
 		}
+		return m, tea.Batch(newCmds...)
+
+	case sessionHydratedMsg:
 		return m, nil
 
 	case errMsg:
@@ -630,7 +678,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case "o":
 		if len(m.sessions) > 0 {
-			return m, connectToSession(m.sessions[m.focused].Name, m.backHint())
+			return m, createSession(m.nextChildName())
 		}
 
 	case "x":
@@ -720,7 +768,7 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case "c":
 		if len(m.sessions) > 0 {
-			return m, createSession(m.nextChildName())
+			return m, connectToSession(m.sessions[m.focused].Name, m.backHint())
 		}
 
 	case "n":

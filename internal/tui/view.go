@@ -450,7 +450,7 @@ func (m Model) viewCommandBar() string {
 	tipsText := m.actionFlash
 	if tipsText == "" {
 		promptsPath := "~/.config/midnight-director/{prompts.json,prompts/*.{txt,md}}"
-		tipsText = "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  c=child session"
+		tipsText = "prompts: " + promptsPath + "  ·  placeholders: {{variable}} {{from:parent}} {{from:name:10l}}  ·  o=child session"
 	}
 
 	// Truncate to one line so the bar height stays predictable on narrow terminals.
