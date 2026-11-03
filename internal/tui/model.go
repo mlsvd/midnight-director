@@ -111,9 +111,11 @@ type Model struct {
 	theme            Theme
 	autoSummarize    bool
 	aiCmd            string
-	mySession        string // tmux session midnight-director itself runs in
-	renamedSession   string // briefly set after rename to drive the moved indicator
-	pickerFromScreen bool   // true if the open picker was launched from the screen overlay, not the list/menu — see pickerSentMsg handling
+	mySession        string             // tmux session midnight-director itself runs in
+	renamedSession   string             // briefly set after rename to drive the moved indicator
+	pickerFromScreen bool               // true if the open picker was launched from the screen overlay, not the list/menu — see pickerSentMsg handling
+	summarizeQueue   []*session.Session // pending summarize requests, drained strictly one at a time — see enqueueSummarize
+	summarizing      bool               // true while a summarize call is in flight, regardless of which session
 	err              error
 }
 

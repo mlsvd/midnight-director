@@ -28,8 +28,8 @@ type liveScreenMsg string
 type screenReattachMsg string
 type sessionRefsMsg []tmux.SessionRef
 type summaryResultMsg struct {
-	idx  int
-	text string
+	session *session.Session
+	text    string
 }
 type errMsg error
 type clearActionFlashMsg struct{}
@@ -130,9 +130,17 @@ func screenTickEvery() tea.Cmd {
 	})
 }
 
+// pollSession refreshes a session's live state every tick, and also re-reads its tmux-persisted
+// Mark/Emoji — unlike state, these aren't derived from the pane, so nothing else here would ever
+// notice if another midnight-director instance changed them via SetMark/SetEmoji. reconcileSessions
+// only loads Mark/Emoji once, for sessions it sees for the first time; without this, a session
+// already known to this instance would keep showing its mark/emoji as of whenever it was first
+// discovered, forever, no matter what another instance set it to afterward.
 func pollSession(idx int, s *session.Session) tea.Cmd {
 	return func() tea.Msg {
 		_ = session.Refresh(s)
+		session.LoadMark(s)
+		session.LoadEmoji(s)
 		return pollMsg{idx: idx}
 	}
 }
@@ -147,26 +155,54 @@ func captureScreen(idx int, name string) tea.Cmd {
 	}
 }
 
-// summarizeConcurrency caps how many AI summarize calls run at once. Each one is a real `claude
-// -p`/equivalent subprocess making an LLM call; when several sessions go idle around the same
-// time (common right after enabling auto-summarize, or right at startup if sessions were
-// already idle), they'd otherwise all fire simultaneously and compete for the same CPU/network/
-// API rate limits, making every one of them slower rather than actually running in parallel.
-// Extra eligible sessions just wait — pollMsg re-checks them every tick until a slot frees up.
-const summarizeConcurrency = 2
-
-var summarizeSem = make(chan struct{}, summarizeConcurrency)
-
-func summarizeSession(idx int, paneText, aiCmd string) tea.Cmd {
+// summarizeSession runs a single AI summarize call. Each call is a real `claude -p`/equivalent
+// subprocess making an LLM call — enqueueSummarize/dispatchNextSummarize are what keep only one
+// of these ever in flight at once; this function itself has no concurrency control, by design.
+func summarizeSession(s *session.Session, aiCmd string) tea.Cmd {
+	paneText := s.LastOutput
 	return func() tea.Msg {
-		summarizeSem <- struct{}{}
-		defer func() { <-summarizeSem }()
 		text, err := ai.Summarize(aiCmd, paneText)
 		if err != nil {
-			return summaryResultMsg{idx: idx, text: ""}
+			return summaryResultMsg{session: s, text: ""}
 		}
-		return summaryResultMsg{idx: idx, text: text}
+		return summaryResultMsg{session: s, text: text}
 	}
+}
+
+// enqueueSummarize requests a summary for s. If nothing else is currently summarizing, it
+// dispatches immediately; otherwise s waits in m.summarizeQueue and is dispatched once every
+// request ahead of it has finished — so no matter how many sessions become eligible at the same
+// moment (e.g. right after toggling auto-summarize on with many already-idle sessions), at most
+// one `claude -p` subprocess ever runs at a time instead of a burst that competes for CPU/API
+// rate limits. priority puts s at the front of the queue instead of the back, for a manually
+// requested summary (menu "summarize" / "g") that shouldn't have to wait behind an arbitrarily
+// long backlog of auto-triggered ones for sessions the user isn't even looking at.
+func (m *Model) enqueueSummarize(s *session.Session, priority bool) tea.Cmd {
+	if s.IsSummarizing {
+		return nil // already queued or in flight
+	}
+	s.IsSummarizing = true
+	if priority {
+		m.summarizeQueue = append([]*session.Session{s}, m.summarizeQueue...)
+	} else {
+		m.summarizeQueue = append(m.summarizeQueue, s)
+	}
+	if m.summarizing {
+		return nil // something else is in flight — dispatched from the queue when it completes
+	}
+	return m.dispatchNextSummarize()
+}
+
+// dispatchNextSummarize pops and starts the next queued summarize request, if any.
+func (m *Model) dispatchNextSummarize() tea.Cmd {
+	if len(m.summarizeQueue) == 0 {
+		m.summarizing = false
+		return nil
+	}
+	next := m.summarizeQueue[0]
+	m.summarizeQueue = m.summarizeQueue[1:]
+	m.summarizing = true
+	return summarizeSession(next, m.aiCmd)
 }
 
 func refreshScreen(name string) tea.Cmd {
@@ -505,19 +541,15 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 				!s.StableStateSince.IsZero() &&
 				time.Since(s.StableStateSince) >= session.SummaryDebounce &&
 				!s.IsSummarizing && s.Summary == "" {
-				s.IsSummarizing = true
-				return m, summarizeSession(msg.idx, s.LastOutput, m.aiCmd)
+				return m, m.enqueueSummarize(s, false)
 			}
 		}
 		return m, nil
 
 	case summaryResultMsg:
-		if msg.idx < len(m.sessions) {
-			s := m.sessions[msg.idx]
-			s.IsSummarizing = false
-			s.Summary = msg.text
-		}
-		return m, nil
+		msg.session.IsSummarizing = false
+		msg.session.Summary = msg.text
+		return m, m.dispatchNextSummarize()
 
 	case screenCaptureMsg:
 		m.setScreenContent(msg.content)
@@ -712,9 +744,8 @@ func (m Model) handleListKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.aiCmd != "" && len(m.sessions) > 0 {
 			s := m.sessions[m.focused]
 			if !s.IsSummarizing {
-				s.IsSummarizing = true
 				s.Summary = ""
-				return m, summarizeSession(m.focused, s.LastOutput, m.aiCmd)
+				return m, m.enqueueSummarize(s, true)
 			}
 		}
 
@@ -840,9 +871,8 @@ func (m Model) executeMenuItem() (Model, tea.Cmd) {
 	case menuSummarize:
 		m.mode = modeList
 		if m.aiCmd != "" && !s.IsSummarizing {
-			s.IsSummarizing = true
 			s.Summary = ""
-			return m, summarizeSession(m.focused, s.LastOutput, m.aiCmd)
+			return m, m.enqueueSummarize(s, true)
 		}
 
 	case menuPrompt:
