@@ -158,9 +158,17 @@ func captureScreen(idx int, name string) tea.Cmd {
 // summarizeSession runs a single AI summarize call. Each call is a real `claude -p`/equivalent
 // subprocess making an LLM call — enqueueSummarize/dispatchNextSummarize are what keep only one
 // of these ever in flight at once; this function itself has no concurrency control, by design.
+// A recover() guards the whole thing: bubbletea runs this on its own goroutine, and an unhandled
+// panic there (e.g. a surprising exit status or output shape from a third-party AI CLI we don't
+// control) would otherwise crash the entire program rather than just failing this one summary.
 func summarizeSession(s *session.Session, aiCmd string) tea.Cmd {
 	paneText := s.LastOutput
-	return func() tea.Msg {
+	return func() (msg tea.Msg) {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = summaryResultMsg{session: s, text: ""}
+			}
+		}()
 		text, err := ai.Summarize(aiCmd, paneText)
 		if err != nil {
 			return summaryResultMsg{session: s, text: ""}
@@ -534,6 +542,9 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		return m, tea.SetWindowTitle(m.windowTitle())
 
 	case pollMsg:
+		if m.pollRoundPending > 0 {
+			m.pollRoundPending--
+		}
 		if msg.idx < len(m.sessions) {
 			s := m.sessions[msg.idx]
 			if m.autoSummarize && m.aiCmd != "" &&
@@ -574,8 +585,18 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tickMsg:
 		var cmds []tea.Cmd
-		for i, s := range m.sessions {
-			cmds = append(cmds, pollSession(i, s))
+		// Skip starting a new poll round if the previous one hasn't finished yet. Each session
+		// poll is several tmux subprocess calls (session.Refresh + LoadMark + LoadEmoji); with
+		// many sessions, a round can occasionally take longer than the 5s tick interval, and
+		// without this guard every tick would pile another full batch of goroutines/subprocesses
+		// on top of the unfinished ones, growing without bound until the process runs out of
+		// file descriptors or memory. Skipping here just means that one tick's refresh is a
+		// no-op — the next tick tries again.
+		if m.pollRoundPending == 0 {
+			for i, s := range m.sessions {
+				cmds = append(cmds, pollSession(i, s))
+			}
+			m.pollRoundPending = len(m.sessions)
 		}
 		cmds = append(cmds, listSessionRefs())
 		cmds = append(cmds, tickEvery(5*time.Second))

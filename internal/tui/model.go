@@ -116,6 +116,7 @@ type Model struct {
 	pickerFromScreen bool               // true if the open picker was launched from the screen overlay, not the list/menu — see pickerSentMsg handling
 	summarizeQueue   []*session.Session // pending summarize requests, drained strictly one at a time — see enqueueSummarize
 	summarizing      bool               // true while a summarize call is in flight, regardless of which session
+	pollRoundPending int                // outstanding pollMsg count for the current 5s poll round — see tickMsg
 	err              error
 }
 

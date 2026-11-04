@@ -57,6 +57,12 @@ func Summarize(bin, paneText string) (string, error) {
 	default:
 		cmd = exec.CommandContext(ctx, bin, "-p", prompt)
 	}
+	// If the CLI spawns a child that outlives it and keeps stdout/stderr open, Output() would
+	// otherwise block forever past SummarizeTimeout waiting for those pipes to reach EOF —
+	// WaitDelay forces them closed shortly after the context kills the process, guaranteeing
+	// this call always returns. Without it, a single hung call could stall the whole summarize
+	// queue (see tui.dispatchNextSummarize) indefinitely, since only one runs at a time.
+	cmd.WaitDelay = 5 * time.Second
 
 	out, err := cmd.Output()
 	if err != nil {
