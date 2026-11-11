@@ -26,7 +26,6 @@ type clearRenamedMsg struct{}
 type sessionCreatedMsg *session.Session
 type liveScreenMsg string
 type screenReattachMsg string
-type sessionRefsMsg []tmux.SessionRef
 type summaryResultMsg struct {
 	session *session.Session
 	text    string
@@ -72,46 +71,98 @@ func firstLine(output string, err error) string {
 	return ""
 }
 
-// discoverSessions fetches every tmux session and hydrates each one's state. Each hydration is
-// several separate tmux subprocess round-trips (current command, pane title, capture-pane, pane
-// PID, two tmux option reads) — done one session at a time, that serial exec overhead is what
-// made the list visibly slow to populate with many sessions. Fanning them out across goroutines
-// cuts the wall-clock cost to roughly the slowest single session instead of the sum of all of
-// them, matching how the ongoing per-tick poll (pollSession) already runs one Cmd per session.
+// pollResult is the shared outcome of fetchPollData, turned into whichever message type the
+// caller's own Update handler expects — see discoverSessions (startup) and pollAll (ongoing
+// 5s tick).
+type pollResult struct {
+	sessions  []*session.Session
+	renamedTo string // non-empty if a session changed name since the last call — see pollAll
+}
+
+// fetchPollData is the single piece of work that replaces what used to be, per tick, a separate
+// `tmux ls` round-trip (for rename/create/kill detection) PLUS one pollSession Cmd per session
+// (each itself ~9 subprocess calls: 4 tmux display-message/capture-pane, 2 tmux show-options, 2
+// ps). tmux.ListPanesAll already reports every session's id/name/command/pid/title/mark/emoji in
+// one call, which covers both jobs at once — there's no need for list-panes AND a separate `tmux
+// ls`. existing lets a session already known by ID or name be matched and mutated in place
+// (preserving Note/Summary/IsSummarizing/etc.) rather than rebuilt from scratch; pass nil at
+// startup, where there's nothing yet to match against.
+func fetchPollData(existing []*session.Session) (pollResult, error) {
+	panes, err := tmux.ListPanesAll()
+	if err != nil {
+		return pollResult{}, err
+	}
+
+	var procTable map[int]session.ProcInfo
+	if session.NeedsProcTable() {
+		procTable, _ = session.LoadProcTable() // best-effort; a nil table just makes every waiting-check resolve to false, same as a failed lookup already did before
+	}
+
+	byID := make(map[string]*session.Session, len(existing))
+	byName := make(map[string]*session.Session, len(existing))
+	for _, s := range existing {
+		if s.ID != "" {
+			byID[s.ID] = s
+		}
+		byName[s.Name] = s
+	}
+
+	renamedTo := ""
+	seen := make(map[*session.Session]bool, len(panes))
+	merged := make([]*session.Session, 0, len(panes))
+	var wg sync.WaitGroup
+
+	for id, info := range panes {
+		s, ok := byID[id]
+		if ok && !seen[s] {
+			if s.Name != info.SessionName {
+				renamedTo = info.SessionName
+			}
+		} else if s, ok = byName[info.SessionName]; !ok || seen[s] {
+			s = &session.Session{} // genuinely new — created directly via tmux, or by another midnight-director instance
+		}
+		s.ID = id
+		s.Name = info.SessionName
+		seen[s] = true
+		merged = append(merged, s)
+
+		wg.Add(1)
+		go func(s *session.Session, info tmux.PaneInfo) {
+			defer wg.Done()
+			_ = session.RefreshFast(s, info, procTable)
+		}(s, info)
+	}
+	wg.Wait()
+
+	return pollResult{sessions: merged, renamedTo: renamedTo}, nil
+}
+
 func discoverSessions() tea.Cmd {
 	return func() tea.Msg {
-		refs, err := tmux.ListSessionsWithIDs()
+		res, err := fetchPollData(nil)
 		if err != nil {
 			return errMsg(err)
 		}
-		sessions := make([]*session.Session, len(refs))
-		var wg sync.WaitGroup
-		for i, ref := range refs {
-			s := &session.Session{ID: ref.ID, Name: ref.Name}
-			sessions[i] = s
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				_ = session.Refresh(s)
-				session.LoadMark(s)
-				session.LoadEmoji(s)
-			}()
-		}
-		wg.Wait()
-		return sessionsDiscoveredMsg(sessions)
+		return sessionsDiscoveredMsg(res.sessions)
 	}
 }
 
-// listSessionRefs polls tmux directly (bypassing this instance's in-memory session list) so
-// reconcileSessions can notice sessions created, killed, or renamed by another midnight-director
-// instance — or by a bare `tmux` command — since the last tick.
-func listSessionRefs() tea.Cmd {
+// pollAllMsg is the single aggregate result of a full poll round, replacing what used to be one
+// pollMsg per session (73 sessions meant 73 separate messages, each triggering its own full
+// list re-render — see tui.Update's buildListContent call). Carrying the whole refreshed slice
+// here means the list is rebuilt exactly once per round, no matter how many sessions exist.
+type pollAllMsg struct {
+	sessions  []*session.Session
+	renamedTo string
+}
+
+func pollAll(existing []*session.Session) tea.Cmd {
 	return func() tea.Msg {
-		refs, err := tmux.ListSessionsWithIDs()
+		res, err := fetchPollData(existing)
 		if err != nil {
 			return nil // a transient tmux hiccup here shouldn't surface as an error popup — just try again next tick
 		}
-		return sessionRefsMsg(refs)
+		return pollAllMsg{sessions: res.sessions, renamedTo: res.renamedTo}
 	}
 }
 
@@ -128,21 +179,6 @@ func screenTickEvery() tea.Cmd {
 	return tea.Every(screenRefreshInterval, func(t time.Time) tea.Msg {
 		return screenTickMsg(t)
 	})
-}
-
-// pollSession refreshes a session's live state every tick, and also re-reads its tmux-persisted
-// Mark/Emoji — unlike state, these aren't derived from the pane, so nothing else here would ever
-// notice if another midnight-director instance changed them via SetMark/SetEmoji. reconcileSessions
-// only loads Mark/Emoji once, for sessions it sees for the first time; without this, a session
-// already known to this instance would keep showing its mark/emoji as of whenever it was first
-// discovered, forever, no matter what another instance set it to afterward.
-func pollSession(idx int, s *session.Session) tea.Cmd {
-	return func() tea.Msg {
-		_ = session.Refresh(s)
-		session.LoadMark(s)
-		session.LoadEmoji(s)
-		return pollMsg{idx: idx}
-	}
 }
 
 func captureScreen(idx int, name string) tea.Cmd {
@@ -362,88 +398,6 @@ func (m *Model) clampFocusedToFilter() {
 	}
 }
 
-// sessionHydratedMsg is a no-op completion ping for hydrateSession — buildListContent reads the
-// *session.Session fields live off the shared pointer, so the message only needs to exist to
-// wake Update() up for a re-render; it carries nothing itself.
-type sessionHydratedMsg struct{}
-
-// hydrateSession fills in a newly-discovered session's state and tmux-persisted tags in the
-// background. reconcileSessions runs synchronously on the main update goroutine (it's not a
-// tea.Cmd) — doing this work there instead would block all key handling and rendering for as
-// long as the tmux subprocess round-trips take, once per newly-seen session.
-func hydrateSession(s *session.Session) tea.Cmd {
-	return func() tea.Msg {
-		_ = session.Refresh(s)
-		session.LoadMark(s)
-		session.LoadEmoji(s)
-		return sessionHydratedMsg{}
-	}
-}
-
-// reconcileSessions merges a fresh tmux session list into m.sessions, so sessions created,
-// killed, or renamed by another midnight-director instance (or a bare tmux command) show up
-// here without a restart. Matching is by tmux's stable session_id first — that's what lets a
-// rename be recognized as a rename (preserving Note/Summary/Mark/in-flight state) rather than
-// read as "killed + new session created". Falls back to matching by name for sessions
-// discovered before IDs were tracked. Returns whether any session was renamed (so the caller
-// can trigger the same "moved" flash a local rename gets) and any commands needed to hydrate
-// genuinely new sessions in the background — see hydrateSession.
-func (m *Model) reconcileSessions(refs []tmux.SessionRef) (bool, []tea.Cmd) {
-	byID := make(map[string]*session.Session, len(m.sessions))
-	byName := make(map[string]*session.Session, len(m.sessions))
-	for _, s := range m.sessions {
-		if s.ID != "" {
-			byID[s.ID] = s
-		}
-		byName[s.Name] = s
-	}
-
-	var focusedSession *session.Session
-	if m.focused < len(m.sessions) {
-		focusedSession = m.sessions[m.focused]
-	}
-
-	renamed := false
-	var newCmds []tea.Cmd
-	seen := make(map[*session.Session]bool, len(refs))
-	merged := make([]*session.Session, 0, len(refs))
-	for _, ref := range refs {
-		if s, ok := byID[ref.ID]; ok && !seen[s] {
-			if s.Name != ref.Name {
-				s.Name = ref.Name
-				m.renamedSession = ref.Name
-				renamed = true
-			}
-			merged = append(merged, s)
-			seen[s] = true
-			continue
-		}
-		if s, ok := byName[ref.Name]; ok && !seen[s] {
-			s.ID = ref.ID // backfill — discovered before ID tracking existed
-			merged = append(merged, s)
-			seen[s] = true
-			continue
-		}
-		// genuinely new — created directly via tmux, or by another midnight-director instance.
-		// Appears in the list immediately with blank state; hydrateSession fills it in async.
-		ns := &session.Session{ID: ref.ID, Name: ref.Name}
-		merged = append(merged, ns)
-		newCmds = append(newCmds, hydrateSession(ns))
-	}
-
-	m.sessions = merged
-	sortSessions(m.sessions)
-
-	if focusedSession != nil {
-		if idx := indexOfSession(m.sessions, focusedSession); idx >= 0 {
-			m.focused = idx
-		}
-	}
-	m.clampFocused()
-
-	return renamed, newCmds
-}
-
 func (m Model) windowTitle() string {
 	running := 0
 	for _, s := range m.sessions {
@@ -541,21 +495,41 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		m.focused = indexByName(m.sessions, msg.Name)
 		return m, tea.SetWindowTitle(m.windowTitle())
 
-	case pollMsg:
-		if m.pollRoundPending > 0 {
-			m.pollRoundPending--
+	case pollAllMsg:
+		m.polling = false
+
+		var focusedSession *session.Session
+		if m.focused < len(m.sessions) {
+			focusedSession = m.sessions[m.focused]
 		}
-		if msg.idx < len(m.sessions) {
-			s := m.sessions[msg.idx]
-			if m.autoSummarize && m.aiCmd != "" &&
-				(s.State == session.StateDone || s.State == session.StateWaiting || s.State == session.StateIdle) &&
-				!s.StableStateSince.IsZero() &&
-				time.Since(s.StableStateSince) >= session.SummaryDebounce &&
-				!s.IsSummarizing && s.Summary == "" {
-				return m, m.enqueueSummarize(s, false)
+		m.sessions = msg.sessions
+		sortSessions(m.sessions)
+		if focusedSession != nil {
+			if idx := indexOfSession(m.sessions, focusedSession); idx >= 0 {
+				m.focused = idx
 			}
 		}
-		return m, nil
+		m.clampFocused()
+
+		var cmds []tea.Cmd
+		if msg.renamedTo != "" {
+			m.renamedSession = msg.renamedTo
+			cmds = append(cmds, clearRenamedAfter())
+		}
+		if m.autoSummarize && m.aiCmd != "" {
+			for _, s := range m.sessions {
+				if (s.State == session.StateDone || s.State == session.StateWaiting || s.State == session.StateIdle) &&
+					!s.StableStateSince.IsZero() &&
+					time.Since(s.StableStateSince) >= session.SummaryDebounce &&
+					!s.IsSummarizing && s.Summary == "" {
+					if c := m.enqueueSummarize(s, false); c != nil {
+						cmds = append(cmds, c)
+					}
+				}
+			}
+		}
+		cmds = append(cmds, tea.SetWindowTitle(m.windowTitle()))
+		return m, tea.Batch(cmds...)
 
 	case summaryResultMsg:
 		msg.session.IsSummarizing = false
@@ -585,33 +559,18 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 
 	case tickMsg:
 		var cmds []tea.Cmd
-		// Skip starting a new poll round if the previous one hasn't finished yet. Each session
-		// poll is several tmux subprocess calls (session.Refresh + LoadMark + LoadEmoji); with
-		// many sessions, a round can occasionally take longer than the 5s tick interval, and
-		// without this guard every tick would pile another full batch of goroutines/subprocesses
-		// on top of the unfinished ones, growing without bound until the process runs out of
-		// file descriptors or memory. Skipping here just means that one tick's refresh is a
-		// no-op — the next tick tries again.
-		if m.pollRoundPending == 0 {
-			for i, s := range m.sessions {
-				cmds = append(cmds, pollSession(i, s))
-			}
-			m.pollRoundPending = len(m.sessions)
+		// Skip starting a new poll round if the previous one hasn't finished yet. One round is
+		// now a single tmux list-panes call (plus, on non-Linux, one shared ps call) covering
+		// every session, so overlap is far less likely than the old per-session fan-out — but
+		// with enough sessions a round can still occasionally outlast the 5s tick interval, and
+		// without this guard every tick would pile another one on top of an unfinished one.
+		// Skipping here just means that one tick's refresh is a no-op — the next tick tries again.
+		if !m.polling {
+			m.polling = true
+			cmds = append(cmds, pollAll(m.sessions))
 		}
-		cmds = append(cmds, listSessionRefs())
 		cmds = append(cmds, tickEvery(5*time.Second))
-		cmds = append(cmds, tea.SetWindowTitle(m.windowTitle()))
 		return m, tea.Batch(cmds...)
-
-	case sessionRefsMsg:
-		renamed, newCmds := m.reconcileSessions(msg)
-		if renamed {
-			newCmds = append(newCmds, clearRenamedAfter())
-		}
-		return m, tea.Batch(newCmds...)
-
-	case sessionHydratedMsg:
-		return m, nil
 
 	case errMsg:
 		m.err = msg
@@ -1222,7 +1181,7 @@ func createSession(name string) tea.Cmd {
 		if err := tmux.NewSession(name); err != nil {
 			return errMsg(err)
 		}
-		id, _ := tmux.SessionID(name) // best-effort — reconcileSessions backfills by name if this is empty
+		id, _ := tmux.SessionID(name) // best-effort — the next poll round backfills by name if this is empty
 		s := &session.Session{ID: id, Name: name}
 		_ = session.Refresh(s)
 		return sessionCreatedMsg(s)

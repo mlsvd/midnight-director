@@ -92,3 +92,65 @@ func getWchan(pid int) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// ProcInfo is one process's foreground-group and wait-channel state, as gathered in bulk by
+// LoadProcTable instead of the two separate `ps -p <pid>` subprocess calls isWaitingForInput
+// used to make per session (on Linux these two facts come from free /proc reads instead, so
+// this table is only built/used on other platforms — see NeedsProcTable).
+type ProcInfo struct {
+	TPGID int
+	WChan string
+}
+
+// NeedsProcTable reports whether this platform requires LoadProcTable at all: Linux's
+// isWaitingForInput already reads /proc directly with zero subprocess cost, so building and
+// looking up a shared ps table there would be pure overhead with no benefit.
+func NeedsProcTable() bool {
+	return runtime.GOOS != "linux"
+}
+
+// LoadProcTable runs a single `ps -A` for every process on the machine, replacing what used to
+// be two separate `ps -p <pid>` subprocess calls per session (tpgid, then wchan) — with many
+// sessions those add up fast, while this one call's cost is paid exactly once per poll round
+// regardless of session count.
+func LoadProcTable() (map[int]ProcInfo, error) {
+	out, err := exec.Command("ps", "-A", "-o", "pid=,tpgid=,wchan=").Output()
+	if err != nil {
+		return nil, err
+	}
+	table := make(map[int]ProcInfo)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		tpgid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		wchan := ""
+		if len(fields) >= 3 {
+			wchan = fields[2]
+		}
+		table[pid] = ProcInfo{TPGID: tpgid, WChan: wchan}
+	}
+	return table, nil
+}
+
+// isWaitingForInputFromTable is the table-driven equivalent of isWaitingForInput, looking up
+// both facts from a pre-fetched ProcInfo map instead of spawning a `ps` subprocess per call.
+func isWaitingForInputFromTable(shellPID int, table map[int]ProcInfo) bool {
+	info, ok := table[shellPID]
+	if !ok || info.TPGID <= 0 || info.TPGID == shellPID {
+		return false
+	}
+	fg, ok := table[info.TPGID]
+	if !ok {
+		return false
+	}
+	return inputWchans[fg.WChan]
+}

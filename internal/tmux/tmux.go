@@ -29,36 +29,71 @@ func ListSessions() ([]string, error) {
 	return sessions, nil
 }
 
-// SessionRef pairs a session's current name with its tmux session_id, which stays stable across
-// renames — it's how reconcileSessions (see tui/update.go) tells "renamed elsewhere" apart from
-// "killed and a new one created" when another midnight-director instance changes a session.
-type SessionRef struct {
-	ID   string
-	Name string
+// PaneInfo is one session's live tmux state, as gathered in bulk by ListPanesAll instead of the
+// 4 separate per-session subprocess calls (display-message ×3, show-options ×2) this used to
+// take. WindowActivity is the unix-seconds timestamp tmux itself tracks for "last time this
+// pane produced output" — session.RefreshFast uses it to skip the much more expensive
+// capture-pane call entirely for sessions that haven't changed since the last poll.
+type PaneInfo struct {
+	SessionID      string
+	SessionName    string
+	Command        string
+	PID            int
+	Title          string
+	WindowActivity int64
+	Mark           string
+	Emoji          string
 }
 
-// ListSessionsWithIDs is like ListSessions but also returns each session's stable session_id.
-func ListSessionsWithIDs() ([]SessionRef, error) {
-	out, err := exec.Command("tmux", "ls", "-F", "#{session_id} #{session_name}").Output()
+// ListPanesAll fetches live state for every session on the server in a single tmux subprocess
+// call, rather than one call per session per field. A session may have more than one window or
+// pane if something outside midnight-director split it — in that case this picks the active
+// pane (window_active && pane_active), matching what a plain `-t session` reference already
+// resolves to elsewhere in this package, so callers don't need to care about the distinction.
+func ListPanesAll() (map[string]PaneInfo, error) {
+	const sep = "\x01"
+	format := strings.Join([]string{
+		"#{session_id}", "#{session_name}", "#{pane_current_command}", "#{pane_pid}",
+		"#{pane_title}", "#{window_activity}", "#{window_active}", "#{pane_active}",
+		"#{@md-mark}", "#{@md-emoji}",
+	}, sep)
+
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", format).Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
+			return map[string]PaneInfo{}, nil // no sessions
 		}
 		return nil, err
 	}
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	var refs []SessionRef
-	for _, l := range lines {
-		if l == "" {
+
+	result := make(map[string]PaneInfo)
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
 			continue
 		}
-		id, name, ok := strings.Cut(l, " ") // name may itself contain spaces — only split on the first
-		if !ok {
+		f := strings.Split(line, sep)
+		if len(f) < 10 {
 			continue
 		}
-		refs = append(refs, SessionRef{ID: id, Name: name})
+		id := f[0]
+		isActivePane := f[6] == "1" && f[7] == "1"
+		if _, seen := result[id]; seen && !isActivePane {
+			continue // already have a row for this session; this one isn't its active pane
+		}
+		pid, _ := strconv.Atoi(f[3])
+		activity, _ := strconv.ParseInt(f[5], 10, 64)
+		result[id] = PaneInfo{
+			SessionID:      id,
+			SessionName:    f[1],
+			Command:        f[2],
+			PID:            pid,
+			Title:          f[4],
+			WindowActivity: activity,
+			Mark:           f[8],
+			Emoji:          f[9],
+		}
 	}
-	return refs, nil
+	return result, nil
 }
 
 func NewSession(name string) error {

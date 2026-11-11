@@ -42,7 +42,7 @@ func (s State) String() string {
 }
 
 type Session struct {
-	ID               string // tmux session_id (e.g. "$3") — stable across renames, see tui.reconcileSessions
+	ID               string // tmux session_id (e.g. "$3") — stable across renames, see tui.fetchPollData
 	Name             string
 	State            State
 	PrevState        State
@@ -59,6 +59,7 @@ type Session struct {
 	IsClaude         bool
 	LastOutput       string
 	LastChangeTime   time.Time
+	LastActivity     int64 // tmux's own #{window_activity} as of the last capture — see RefreshFast
 }
 
 var shellCommands = map[string]bool{
@@ -137,6 +138,90 @@ func Refresh(s *Session) error {
 	s.StableStateSince = time.Time{} // reset debounce — state is active again
 
 	// clear stale summary when a new run begins
+	if s.PrevState != StateRunning {
+		s.Summary = ""
+		s.IsSummarizing = false
+	}
+
+	return nil
+}
+
+// RefreshFast is the batched-poll equivalent of Refresh: info comes from a single
+// tmux.ListPanesAll() call shared across every session being polled this round, so this
+// function itself never calls tmux's display-message or show-options (the 6 subprocess calls
+// Refresh+LoadMark+LoadEmoji used to make). The only subprocess call it can still make is
+// capture-pane, and only when info.WindowActivity shows the pane's content has actually
+// changed since the last poll — tmux already knows this for free, so there's no need to
+// recapture and diff unchanged panes on every tick. procTable comes from a single
+// session.LoadProcTable() call shared the same way, for platforms where that isn't already a
+// free /proc read (see NeedsProcTable); pass nil on Linux to use the existing /proc fast path.
+func RefreshFast(s *Session, info tmux.PaneInfo, procTable map[int]ProcInfo) error {
+	s.PrevState = s.State
+	s.Command = info.Command
+	s.IsClaude = info.Command == "claude"
+	s.Mark = info.Mark
+	s.Emoji = info.Emoji
+
+	if isShell(info.Command) {
+		if s.PrevState != StateIdle {
+			s.StableStateSince = time.Now()
+			s.Title = ""
+		}
+		s.State = StateIdle
+		s.Hint = ""
+		s.StreamChunk = ""
+		s.LastActivity = info.WindowActivity
+		return nil
+	}
+
+	s.Title = info.Title
+
+	pane := s.LastOutput
+	if info.WindowActivity != s.LastActivity || s.LastActivity == 0 {
+		p, err := tmux.CapturePanePlain(s.Name)
+		if err != nil {
+			return err
+		}
+		pane = p
+		s.LastActivity = info.WindowActivity
+		if pane != s.LastOutput {
+			s.LastOutput = pane
+			s.LastChangeTime = time.Now()
+			s.StreamChunk = lastNonEmpty(tailLines(pane, 3))
+		}
+	}
+
+	if info.PID > 0 {
+		var waiting bool
+		if procTable != nil {
+			waiting = isWaitingForInputFromTable(info.PID, procTable)
+		} else {
+			waiting = isWaitingForInput(info.PID) // Linux: free /proc reads, no subprocess
+		}
+		if waiting {
+			if s.PrevState != StateWaiting {
+				s.StableStateSince = time.Now()
+			}
+			s.State = StateWaiting
+			s.Hint = extractHint(pane)
+			s.StreamChunk = ""
+			return nil
+		}
+	}
+
+	if !s.LastChangeTime.IsZero() && time.Since(s.LastChangeTime) > StaleThreshold {
+		if s.PrevState != StateDone {
+			s.StableStateSince = time.Now()
+		}
+		s.State = StateDone
+		s.Hint = extractHint(pane)
+		s.StreamChunk = ""
+		return nil
+	}
+
+	s.State = StateRunning
+	s.StableStateSince = time.Time{} // reset debounce — state is active again
+
 	if s.PrevState != StateRunning {
 		s.Summary = ""
 		s.IsSummarizing = false

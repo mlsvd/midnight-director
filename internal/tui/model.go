@@ -82,7 +82,6 @@ func (m Model) menuEntries() []menuEntry {
 
 type tickMsg time.Time
 type screenTickMsg time.Time
-type pollMsg struct{ idx int }
 type screenCaptureMsg struct {
 	idx     int
 	content string
@@ -116,7 +115,7 @@ type Model struct {
 	pickerFromScreen bool               // true if the open picker was launched from the screen overlay, not the list/menu — see pickerSentMsg handling
 	summarizeQueue   []*session.Session // pending summarize requests, drained strictly one at a time — see enqueueSummarize
 	summarizing      bool               // true while a summarize call is in flight, regardless of which session
-	pollRoundPending int                // outstanding pollMsg count for the current 5s poll round — see tickMsg
+	polling          bool               // true while a poll round is in flight — see tickMsg
 	err              error
 }
 
