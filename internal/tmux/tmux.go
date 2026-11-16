@@ -45,17 +45,36 @@ type PaneInfo struct {
 	Emoji          string
 }
 
+// panesFieldCount is how many "\t"-joined tokens ListPanesAll's format string emits. Keep this
+// in sync with the field list below — it's also exactly how many elements SplitN is told to
+// produce, so a short line (fewer than panesFieldCount-1 tabs) still parses as best-effort
+// instead of being silently discarded.
+const panesFieldCount = 10
+
 // ListPanesAll fetches live state for every session on the server in a single tmux subprocess
 // call, rather than one call per session per field. A session may have more than one window or
 // pane if something outside midnight-director split it — in that case this picks the active
 // pane (window_active && pane_active), matching what a plain `-t session` reference already
 // resolves to elsewhere in this package, so callers don't need to care about the distinction.
+//
+// The separator between fields matters more than it looks: an earlier version used "\x01" on
+// the theory that a raw control byte could never collide with real pane content, but tmux
+// itself doesn't treat that assumption uniformly — some versions pass embedded control bytes
+// through a -F format string untouched, others (confirmed on tmux 3.4) escape them to the
+// literal 4-character sequence "\001", which then never matches split("\x01") at all. Every
+// line fails to parse, ListPanesAll silently returns an empty map with no error, and the
+// session list looks identical to "there really are zero sessions" — this is exactly the "md
+// shows no sessions but tmux list-sessions has them" bug. "\t" doesn't have this problem (tmux
+// passes it through as a real tab on every version tested), but it can legitimately appear in
+// free-text fields a user controls (a session name, a pane title) — so those go last and are
+// parsed with SplitN, meaning a stray tab can only ever bleed into the final field's own
+// content, never shift or corrupt the structured fields that come before it.
 func ListPanesAll() (map[string]PaneInfo, error) {
-	const sep = "\x01"
+	const sep = "\t"
 	format := strings.Join([]string{
-		"#{session_id}", "#{session_name}", "#{pane_current_command}", "#{pane_pid}",
-		"#{pane_title}", "#{window_activity}", "#{window_active}", "#{pane_active}",
-		"#{@md-mark}", "#{@md-emoji}",
+		"#{session_id}", "#{pane_pid}", "#{window_activity}", "#{window_active}",
+		"#{pane_active}", "#{@md-mark}", "#{@md-emoji}",
+		"#{session_name}", "#{pane_current_command}", "#{pane_title}",
 	}, sep)
 
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F", format).Output()
@@ -66,33 +85,60 @@ func ListPanesAll() (map[string]PaneInfo, error) {
 		return nil, err
 	}
 
+	return parsePanesOutput(string(out))
+}
+
+// parsePanesOutput is split out from ListPanesAll purely so the format-mismatch detection below
+// can be exercised directly in tests against synthetic input, without needing a tmux binary
+// whose exact field-escaping behavior varies by version to reproduce the failure.
+func parsePanesOutput(out string) (map[string]PaneInfo, error) {
+	const sep = "\t"
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	result := make(map[string]PaneInfo)
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+	totalLines, parsedRows := 0, 0
+	var sampleBadLine string
+
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}
-		f := strings.Split(line, sep)
-		if len(f) < 10 {
+		totalLines++
+		f := strings.SplitN(line, sep, panesFieldCount)
+		if len(f) < panesFieldCount {
+			if sampleBadLine == "" {
+				sampleBadLine = line
+			}
 			continue
 		}
+		parsedRows++
+
 		id := f[0]
-		isActivePane := f[6] == "1" && f[7] == "1"
+		isActivePane := f[3] == "1" && f[4] == "1"
 		if _, seen := result[id]; seen && !isActivePane {
 			continue // already have a row for this session; this one isn't its active pane
 		}
-		pid, _ := strconv.Atoi(f[3])
-		activity, _ := strconv.ParseInt(f[5], 10, 64)
+		pid, _ := strconv.Atoi(f[1])
+		activity, _ := strconv.ParseInt(f[2], 10, 64)
 		result[id] = PaneInfo{
 			SessionID:      id,
-			SessionName:    f[1],
-			Command:        f[2],
 			PID:            pid,
-			Title:          f[4],
 			WindowActivity: activity,
-			Mark:           f[8],
-			Emoji:          f[9],
+			Mark:           f[5],
+			Emoji:          f[6],
+			SessionName:    f[7],
+			Command:        f[8],
+			Title:          f[9],
 		}
 	}
+
+	// tmux printed real output but not one line of it matched the expected shape — that's a
+	// format incompatibility, not "no sessions," and must not look like one (see the long
+	// comment above). Surfacing it as an error is what makes it show up in the UI instead of
+	// silently rendering an empty list.
+	if totalLines > 0 && parsedRows == 0 {
+		return nil, fmt.Errorf("list-panes output didn't match the expected %d-field format (got e.g. %q)", panesFieldCount, sampleBadLine)
+	}
+
 	return result, nil
 }
 
