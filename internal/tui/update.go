@@ -160,7 +160,11 @@ func pollAll(existing []*session.Session) tea.Cmd {
 	return func() tea.Msg {
 		res, err := fetchPollData(existing)
 		if err != nil {
-			return nil // a transient tmux hiccup here shouldn't surface as an error popup — just try again next tick
+			// Must not return nil here: in bubbletea a Cmd returning a nil message delivers
+			// nothing to Update at all, which would leave m.polling stuck true forever (it's
+			// only ever cleared by the pollAllMsg handler) — permanently disabling every future
+			// poll round after a single failure, with no way to recover short of restarting.
+			return errMsg(err)
 		}
 		return pollAllMsg{sessions: res.sessions, renamedTo: res.renamedTo}
 	}
@@ -485,6 +489,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 		return m, cmd
 
 	case sessionsDiscoveredMsg:
+		m.err = nil
 		m.sessions = msg
 		sortSessions(m.sessions)
 		return m, tea.SetWindowTitle(m.windowTitle())
@@ -497,6 +502,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 
 	case pollAllMsg:
 		m.polling = false
+		m.err = nil
 
 		var focusedSession *session.Session
 		if m.focused < len(m.sessions) {
@@ -574,6 +580,7 @@ func (m Model) innerUpdate(msg tea.Msg) (Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg
+		m.polling = false // a failed poll round must still release this, or tickMsg would stop retrying forever
 		return m, nil
 
 	case clearRenamedMsg:

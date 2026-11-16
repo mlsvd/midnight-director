@@ -59,7 +59,14 @@ func (m Model) renderFilterBanner() string {
 // off by the viewport when the focused row sits near the bottom.
 func (m Model) buildListContent() (string, int) {
 	if len(m.sessions) == 0 {
-		msg := m.theme.Empty.Render("No sessions. Press  n  to create one.")
+		text := "No sessions. Press  n  to create one."
+		if m.err != nil {
+			// Without this, a failed tmux query looks pixel-for-pixel identical to "there really
+			// are zero sessions" — indistinguishable and effectively unreportable (see the
+			// "md shows no sessions but tmux list-sessions has them" class of bug).
+			text = "Session list failed to load:\n" + m.err.Error() + "\n\n(retrying automatically every 5s)"
+		}
+		msg := m.theme.Empty.Render(text)
 		return lipgloss.Place(m.viewport.Width, m.viewport.Height, lipgloss.Center, lipgloss.Center, msg), 0
 	}
 
